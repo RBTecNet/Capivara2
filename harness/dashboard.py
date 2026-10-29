@@ -15,6 +15,7 @@ from .dashboard_art import wordmark
 from .domain import AgentSelection, PROVIDERS
 from .run_events import InitEvent
 from .mascot import Mascot
+from .plan_progress import PlanProgress
 
 
 CYAN = "#05bfd8"
@@ -35,6 +36,13 @@ STAGES = {
     "completed": (5, "Finalizando"),
 }
 PIPELINE = ("Pedido", "Análise", "Entrevista", "Redação", "Revisão", "Concluído")
+PLAN_STAGES = {
+    "starting": (0, "Prompt do init"), "decomposing": (1, "Divisão da fase"),
+    "writing_task": (2, "Redação da task"), "reviewing_task": (3, "Revisão da task"),
+    "reviewing_phase": (4, "Revisão da fase"), "reviewing_plan": (4, "Revisão do plano"),
+    "revision_requested": (3, "Correção documental"), "completed": (5, "Finalizando"),
+}
+PLAN_PIPELINE = ("Origem", "Divisão", "Tasks", "Revisão", "Fases", "Concluído")
 STATUS = {"ready": ("pronto", MUTED), "running": ("em andamento", YELLOW),
           "completed": ("concluído", GREEN), "cancelled": ("interrompido", YELLOW), "failed": ("falhou", RED)}
 
@@ -124,12 +132,21 @@ class InitDashboard(VerticalScroll):
     InitDashboard.short #dash-masthead { height: 8; }
     InitDashboard.short #dash-brand, InitDashboard.short #dash-tagline { height: 7; }
     InitDashboard.short #dash-mascot { display: none; }
+    InitDashboard.planning #dash-work-row { height: 16; }
+    InitDashboard.planning #dash-pipeline { height: 16; }
+    InitDashboard.planning.compact #dash-work-row { height: 26; }
+    InitDashboard.planning.narrow #dash-work-row { height: 30; }
+    InitDashboard.planning.narrow #dash-pipeline { height: 20; }
     """
 
-    def __init__(self, project_dir: Path, agents: dict[str, AgentSelection]) -> None:
+    def __init__(self, project_dir: Path, agents: dict[str, AgentSelection], *, module: str = "init") -> None:
         super().__init__(id="init-dashboard")
         self.project_dir = project_dir
         self.agents = agents
+        self.module = module
+        self.set_class(module == "plan", "planning")
+        self.stages = PLAN_STAGES if module == "plan" else STAGES
+        self.pipeline_labels = PLAN_PIPELINE if module == "plan" else PIPELINE
         self.event = InitEvent("starting", "starting", 0, None, None, 0, 0, 0, 0, 0, 0)
         self.run_status = "ready"
         self.started_at = monotonic()
@@ -144,34 +161,43 @@ class InitDashboard(VerticalScroll):
             with Vertical(id="dash-brand"):
                 yield Static(wordmark(), id="dash-logo", name="CAPIVARA")
                 yield Static("CAPIVARA", id="dash-small-logo")
-                yield Static("INIT · DOCUMENTAÇÃO · CONTROLE DE EXECUÇÃO", id="dash-subtitle")
+                yield Static(f"{self.module.upper()} · DOCUMENTAÇÃO · CONTROLE DE EXECUÇÃO", id="dash-subtitle")
                 yield Static(f"v{release}", id="dash-version")
             yield Mascot(id="dash-mascot", name="Capivara documentadora")
             yield Static("CAPIVARA · capivara documentadora", id="dash-tagline")
         with Grid(id="dash-summary"):
             yield DashboardField("PROJETO", f"▱ {self.project_dir}", id="dash-project", tooltip=str(self.project_dir))
-            yield DashboardField("MÓDULO", "init", id="dash-workflow")
+            yield DashboardField("MÓDULO", self.module, id="dash-workflow")
             yield DashboardField("ETAPA ATUAL", "Preparação", id="dash-stage")
             yield DashboardField("STATUS", "pronto", id="dash-status")
             yield DashboardField("DURAÇÃO", "0m 00s", id="dash-duration")
         with Horizontal(id="dash-work-row"):
             with Vertical(id="dash-pipeline", classes="dash-card"):
-                yield Static("PIPELINE · FLUXO DO INIT", classes="dash-title")
-                yield Static("", id="dash-pipeline-body")
-                yield Static("Pedido → entrevista → prompt → aprovação do revisor", id="dash-pipeline-note")
+                yield Static("PLAN · CRIAÇÃO (C) E VALIDAÇÃO (V)" if self.module == "plan" else "PIPELINE · FLUXO DO INIT", classes="dash-title")
+                if self.module == "plan":
+                    yield PlanProgress()
+                else:
+                    yield Static("", id="dash-pipeline-body")
+                    yield Static("Pedido → entrevista → prompt → aprovação do revisor", id="dash-pipeline-note")
             with Vertical(id="dash-provider", classes="dash-card"):
                 yield Static("PROVEDOR ATUAL", classes="dash-title")
                 yield Static("", id="dash-provider-body")
         with Vertical(id="dash-telemetry", classes="dash-card"):
-            yield Static("TELEMETRIA · INIT", classes="dash-title")
+            yield Static(f"TELEMETRIA · {self.module.upper()}", classes="dash-title")
             with Grid(id="dash-metrics"):
-                for label, key in (("ENTREVISTA", "questions"), ("RODADA", "round"), ("OPERAÇÕES", "operations"),
+                metrics = (("FASES", "phases"), ("TASKS", "tasks"), ("RODADA", "round"),
+                           ("OPERAÇÕES", "operations"), ("INVOCAÇÕES", "invocations"),
+                           ("CORREÇÕES", "corrections"), ("TOKENS", "tokens")) if self.module == "plan" else (
+                                   ("ENTREVISTA", "questions"), ("RODADA", "round"), ("OPERAÇÕES", "operations"),
                                    ("INVOCAÇÕES", "invocations"), ("CORREÇÕES", "corrections"),
-                                   ("INFERÊNCIAS", "inferences"), ("TOKENS", "tokens")):
+                                   ("INFERÊNCIAS", "inferences"), ("TOKENS", "tokens"))
+                for label, key in metrics:
                     hint = {
+                        "phases": "Fases aprovadas / fases da origem, incluindo a fase 0.",
+                        "tasks": "Tasks aprovadas / tasks identificadas até o momento; o total aumenta durante a divisão.",
                         "questions": "Respostas registradas / perguntas preparadas, somando as rodadas.",
-                        "round": "Rodada atual de elaboração e revisão do prompt.",
-                        "operations": "Pedidos lógicos aos agentes: análise, entrevista, escrita e revisão.",
+                        "round": "Rodada atual de elaboração e revisão documental.",
+                        "operations": "Pedidos lógicos aos agentes durante este módulo.",
                         "invocations": "Tentativas de chamada ao CLI, incluindo novas chamadas para corrigir formato.",
                         "corrections": "Devoluções para ajustar o documento ou o contrato da resposta.",
                         "inferences": "Decisões internas registradas pelo escritor, sem entrevista.",
@@ -185,7 +211,8 @@ class InitDashboard(VerticalScroll):
         yield Static("Os agentes geram documentação; os artefatos ficam em .harness.", id="init-progress", markup=False)
         with Horizontal(id="dash-actions"):
             yield Button("Interromper · Esc", id="back", compact=True)
-            for label, key in (("Ver prompt final", "init-view"), ("Tentar novamente", "init-retry"), ("Fechar", "init-close")):
+            for label, key in (("Ver plano final" if self.module == "plan" else "Ver prompt final", "init-view"),
+                               ("Tentar novamente", "init-retry"), ("Fechar", "init-close")):
                 button = Button(label, id=key, compact=True)
                 button.display = False
                 yield button
@@ -212,7 +239,7 @@ class InitDashboard(VerticalScroll):
         self.duration = 0
         self.query_one(RichLog).clear()
         self.render_data()
-        self.log("workflow · init · iniciado")
+        self.log(f"workflow · {self.module} · iniciado")
 
     def tick(self) -> None:
         if self.run_status == "running":
@@ -231,9 +258,11 @@ class InitDashboard(VerticalScroll):
         self.render_data()
         role = "revisor" if event.last_role == "reviewer" else "escritor"
         if event.kind == "stage_changed":
-            label = STAGES.get(event.stage, (0, event.stage))[1]
+            label = self.stages.get(event.stage, (0, event.stage))[1]
             if event.stage == "completed":
-                label = "Revisão aprovada · salvando prompt final"
+                label = "Revisão aprovada · salvando plano final" if self.module == "plan" else "Revisão aprovada · salvando prompt final"
+            if self.module == "plan" and event.phase_number is not None:
+                label += f" · fase {event.phase_number}"
             self.log(f"etapa · {label.lower()}" + (f" · rodada {event.round}" if event.round else ""), CYAN)
         elif event.kind == "agent_started":
             selection = self.agents.get(event.active_role)
@@ -255,22 +284,30 @@ class InitDashboard(VerticalScroll):
         self.run_status = status
         self.render_data()
         label, color = STATUS[status]
-        self.log(f"workflow · init · {label}", color)
+        self.log(f"workflow · {self.module} · {label}", color)
 
     def render_data(self) -> None:
         if not self.query("#dash-stage"):
             return
         label, color = STATUS[self.run_status]
         self.query_one("#dash-status", DashboardField).set_value(Text(f"● {label}", style=color))
-        stage_label = "Concluído" if self.run_status == "completed" else STAGES.get(self.event.stage, (0, self.event.stage))[1]
+        stage_label = "Concluído" if self.run_status == "completed" else self.stages.get(self.event.stage, (0, self.event.stage))[1]
+        if self.module == "plan" and self.event.phase_number is not None and self.run_status != "completed":
+            stage_label += f" · fase {self.event.phase_number}"
         self.query_one("#dash-stage", DashboardField).set_value(Text(f"▶ {stage_label}", style=CYAN))
-        for key, value in (("questions", f"{self.event.answers}/{self.event.questions} respostas"),
+        values = (("phases", f"{self.event.phases_approved}/{self.event.phases_total} aprovadas"),
+                  ("tasks", f"{self.event.tasks_approved}/{self.event.tasks_total} aprovadas")) if self.module == "plan" else (
+                  ("questions", f"{self.event.answers}/{self.event.questions} respostas"),
+                  ("inferences", str(self.event.inferences)))
+        for key, value in (*values,
                            ("round", str(self.event.round)), ("operations", str(self.event.operations)),
-                           ("invocations", str(self.event.invocations)), ("corrections", str(self.event.corrections)),
-                           ("inferences", str(self.event.inferences))):
+                           ("invocations", str(self.event.invocations)), ("corrections", str(self.event.corrections))):
             self.query_one(f"#metric-{key}", DashboardField).set_value(value)
         self.query_one("#dash-provider-body", Static).update(self.provider())
-        self.query_one("#dash-pipeline-body", Static).update(self.pipeline())
+        if self.module == "plan":
+            self.query_one(PlanProgress).update_items(self.event.items)
+        else:
+            self.query_one("#dash-pipeline-body", Static).update(self.pipeline())
         self.tick()
 
     def provider(self) -> Text:
@@ -296,7 +333,7 @@ class InitDashboard(VerticalScroll):
 
     def pipeline(self) -> Text:
         width = max(30, self.query_one("#dash-pipeline-body", Static).size.width)
-        current = STAGES.get(self.event.stage, (0, ""))[0]
+        current = self.stages.get(self.event.stage, (0, ""))[0]
         groups = (range(3), range(3, 6)) if width < 64 else (range(6),)
         result = Text()
         for group_index, group in enumerate(groups):
@@ -312,7 +349,7 @@ class InitDashboard(VerticalScroll):
                     caption, symbol, color = "em curso", "●", YELLOW
                     if self.run_status in ("failed", "cancelled"):
                         caption, color = STATUS[self.run_status]
-                if index == 2 and done and not self.event.questions:
+                if self.module == "init" and index == 2 and done and not self.event.questions:
                     caption = "inferida" if self.event.inferences else "dispensada"
                 nodes.append((index, caption, symbol, color))
             result.append(" " * (cell // 2))
@@ -323,7 +360,7 @@ class InitDashboard(VerticalScroll):
             for row in ("label", "caption"):
                 result.append("\n")
                 for index, caption, _, color in nodes:
-                    value = PIPELINE[index] if row == "label" else caption
+                    value = self.pipeline_labels[index] if row == "label" else caption
                     value = value[:cell - 1]
                     result.append(value.center(cell), style=color if row == "label" else MUTED)
         return result

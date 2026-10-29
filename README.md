@@ -3,6 +3,7 @@
 Harness com wizard em tela cheia, feito em Python com
 [Textual](https://textual.textualize.io/). O `init` recebe o pedido, entrevista o
 usuário e produz um prompt profissional por fases, aprovado por um revisor.
+O `plan` decompõe esse documento em tasks pequenas e revisadas, sem gerar código.
 
 ## Executar
 
@@ -34,9 +35,11 @@ permanece sem remoto até autorização do usuário.
 ## Fluxo
 
 1. Conferir ou editar a pasta do projeto; Enter confirma.
-2. Escolher a função `init`. Depois de um init concluído, `plan` começa selecionado;
-   seu menu informa que a implementação será feita na próxima etapa.
-3. Escolher entre prompt manual, arquivo e base MCP.
+2. Escolher `init` ou `plan`. O plan exige init aprovado e íntegro e começa
+   selecionado após sua conclusão. Depois do plan aprovado, `build` é destacado,
+   mas sua execução ainda será implementada.
+3. No init, escolher entre prompt manual, arquivo e base MCP. No plan, essa
+   etapa é pulada: a origem é sempre `.harness/prompts/final.md`.
 4. Digitar o prompt com múltiplas linhas, informar um arquivo UTF-8 ou selecionar
    a instância MCP e o projeto remoto.
 5. Selecionar IA escritora, modelo e effort.
@@ -52,7 +55,7 @@ Os controles também aceitam mouse. O rascunho do prompt permanece ao voltar.
 Arquivos de prompt podem usar caminhos absolutos, `~` ou caminhos relativos à
 pasta do projeto selecionada. O conteúdo é lido e validado antes de avançar.
 
-“Sim” inicia o init documental. “Não” encerra o wizard sem executar o módulo.
+“Sim” inicia o módulo documental selecionado. “Não” encerra o wizard sem executá-lo.
 
 ## Init documental
 
@@ -127,11 +130,67 @@ Reexecutar o init substitui os artefatos anteriores dessa pasta gerenciada e
 reinicia os status de plan/build. Os arquivos da aplicação na raiz são preservados.
 Uma pasta `.harness` não reconhecida é preservada e gera uma mensagem, em vez de
 ser apagada. Ao reabrir um projeto cujo prompt final aprovado continua íntegro,
-`plan` é destacado como próximo módulo. `plan` e `build` ainda não executam trabalho.
+`plan` é destacado como próximo módulo. O build permanece para uma etapa posterior.
+
+## Plan documental
+
+O plan lê o prompt final e sua representação estruturada, confere o hash e a
+aprovação do init e preserva a ordem, as dependências e a identidade de suas fases.
+A **fase 0 — Stack de implantação e dependências de desenvolvimento e testes**
+documenta as escolhas já aprovadas. As demais fases são divididas em tasks pequenas,
+com IDs estáveis, objetivo delimitado, passos de implementação, entregáveis e
+referências literais da fase de origem.
+
+O revisor decompõe cada fase em recortes. O escritor recebe apenas um recorte por
+chamada, com o objetivo e as restrições globais necessárias; não recebe a fase inteira.
+**Todas as chamadas começam com contexto vazio**, inclusive revisões e correções.
+As entradas são registradas para auditoria, mas nunca recuperadas como histórico.
+O documento também registra esse contrato para a futura execução de cada task no build.
+
+Cada task passa por comparação documental com a origem. Após aprovar suas tasks,
+o revisor compara a fase inteira; no fim, compara o plano completo com o prompt
+aprovado e a finalidade do pedido inicial. Desvios retornam somente às tasks apontadas,
+com motivo e orientação de correção. Omissões podem gerar novas tasks, que passam
+pelas mesmas revisões. Fases afetadas são revisadas novamente. O ciclo continua
+até aprovação explícita, sem limite fixo ou aprovação por número de tentativas.
+Se o erro estiver no recorte criado na decomposição, o revisor também pode
+substituir seu escopo e referências, antes da reescrita da task.
+
+O plan não entrevista o usuário, gera código, verifica dependências instaladas ou
+executa testes. Suas verificações se limitam à correspondência entre os documentos.
+Também não cria cenários, comandos, estratégias ou roteiros de testes para o build;
+o build definirá suas validações. Identificar as dependências de desenvolvimento e
+testes já aprovadas na fase 0 não constitui um plano de testes.
+
+```text
+.harness/plan/
+  source.json                    # cópia da origem aprovada e seu hash
+  final.md                       # plano somente após aprovação completa
+  final.json                     # fases e tasks estruturadas para o futuro build
+  phases/00/outline.json          # recortes da fase 0
+  phases/00/tasks/P0-T001.json    # documentação de uma única task
+  phases/00/approved.json        # fase após revisão coletiva
+  context/call-0001.json         # entrada isolada, sem histórico de outras chamadas
+  control/settings.json          # escritor, revisor e política de contexto
+  control/checkpoint.json        # progresso e aprovações de tasks/fases
+  control/reviews/               # pareceres de cada comparação documental
+  control/approval.json          # aprovação global e hash do plano
+  log/                           # entradas, saídas, erros e eventos deste módulo
+```
+
+O status do plan fica no arquivo compartilhado `.harness/status.json`. Reexecutá-lo
+substitui somente `.harness/plan` e reinicia o status do build, preservando o init
+e os arquivos da aplicação. Init e plan não podem executar ao mesmo tempo no mesmo
+projeto. Uma interrupção ou falha mantém os registros e não libera o build.
+
+Só depois de aprovar todas as tasks, todas as fases e o plano completo, o plan é
+marcado como concluído. Ao reabrir a TUI, o build fica habilitado e selecionado se
+a origem e o plano aprovado continuarem íntegros. Seu menu informa que a execução
+será implementada posteriormente. O plan continua disponível para reexecução.
 
 ## Painel de execução
 
-O dashboard do init usa a marca **CAPIVARA**, mascote em PNG, fundo
+O dashboard de cada módulo usa a marca **CAPIVARA**, mascote em PNG, fundo
 escuro e painéis ciano. A faixa superior mostra projeto, módulo, etapa, status e
 duração. Abaixo ficam o pipeline documental, o provedor atual com papel/modelo/effort,
 a telemetria e os eventos recentes.
@@ -145,7 +204,20 @@ O arquivo original de 40 × 13 é preservado; sua exibição é ajustada proporc
 para 31 × 10 no cabeçalho atual, mantendo as cores e o enquadramento completo.
 O funcionamento do harness não depende de suporte a imagens.
 
-As informações vêm da execução real: perguntas/respostas, rodada, operações lógicas,
+No plan, o painel mostra fases aprovadas/total, tasks aprovadas/identificadas até o
+momento, fase atual, rodadas e revisões. Os totais de tasks podem aumentar enquanto
+as fases são decompostas ou quando o revisor identifica uma omissão. Não há métricas
+de entrevistas ou inferências nesse módulo.
+
+No lugar do pipeline, o plan apresenta uma árvore rolável de fases e tasks, com
+**duas bolinhas por linha: criação (C) e validação (V)**. O círculo vazio aguarda;
+amarelo indica trabalho em andamento, verde indica conclusão e vermelho indica
+devolução do revisor. Uma nova redação põe a criação em amarelo, mantendo a validação
+vermelha até a nova revisão. A barra acima da árvore mostra a criação dos itens
+identificados; seu total acompanha a descoberta de tasks. A lista acompanha o item
+ativo e permite rolagem manual, sem perder a posição escolhida a cada atualização.
+
+As informações vêm da execução real: perguntas/respostas no init, rodada, operações lógicas,
 tentativas de chamada aos CLIs, devoluções para correção e decisões internas inferidas.
 O provedor muda entre escritor e revisor conforme cada chamada. Tokens aparecem como
 “não medido”, pois o harness ainda não contabiliza esse consumo. O painel apresenta
@@ -282,3 +354,8 @@ Os testes do init focam no documento: preservação do pedido original, fase 0 e
 fases executáveis, decisões obrigatórias sobre stack/ferramentas, lacunas resolvidas,
 devolução de desvios/inviabilidade e aprovação explícita. Não testam a aplicação
 solicitada nem verificam ferramentas do ambiente.
+
+Os testes do plan verificam pré-requisito e integridade do init, preservação das
+fases, contexto vazio por chamada, envio de uma única task ao escritor, devolução
+pontual de divergências, inclusão e revisão de omissões, cancelamento, reexecução
+e liberação do build somente depois de todas as aprovações documentais.

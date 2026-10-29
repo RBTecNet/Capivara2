@@ -79,8 +79,8 @@ class InterviewStep(Step):
 
 
 class FinalPromptStep(Step):
-    def __init__(self, path: Path) -> None:
-        super().__init__("Prompt final aprovado", str(path), 5)
+    def __init__(self, path: Path, *, module: str = "init") -> None:
+        super().__init__("Plano final aprovado" if module == "plan" else "Prompt final aprovado", str(path), 5)
         self.path = path
 
     def fields(self) -> ComposeResult:
@@ -90,8 +90,9 @@ class FinalPromptStep(Step):
 class InitExecutionStep(Step):
     BINDINGS = [Binding("escape", "back", "Interromper / voltar", priority=True)]
 
-    def __init__(self) -> None:
-        super().__init__("Init · geração do prompt", "Revisor e escritor refinam a documentação até a aprovação.", 5)
+    def __init__(self, *, module: str = "init") -> None:
+        super().__init__(f"{module.title()} · documentação", "Revisor e escritor refinam a documentação até a aprovação.", 5)
+        self.module = module
         self.busy = False
         self.engine = None
         self.final_path = None
@@ -100,7 +101,7 @@ class InitExecutionStep(Step):
     def compose(self) -> ComposeResult:
         agents = {role: agent for role, agent in (("writer", self.wizard.state.writer),
                                                   ("reviewer", self.wizard.state.reviewer)) if agent is not None}
-        yield InitDashboard(self.wizard.state.project_dir, agents)
+        yield InitDashboard(self.wizard.state.project_dir, agents, module=self.module)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -144,21 +145,26 @@ class InitExecutionStep(Step):
     @work(exclusive=True)
     async def execute(self) -> None:
         try:
-            self.engine = InitEngine(self.wizard.state, self.wizard.agents, interview=self.ask, on_event=self.execution_event)
+            if self.module == "plan":
+                from .plan_engine import PlanEngine
+                self.engine = PlanEngine(self.wizard.state, self.wizard.agents, on_event=self.execution_event)
+            else:
+                self.engine = InitEngine(self.wizard.state, self.wizard.agents, interview=self.ask, on_event=self.execution_event)
             self.final_path = await self.engine.run()
             self.query_one(InitDashboard).finish("completed")
-            self.progress("Init concluído. Prompt aprovado: .harness/prompts/final.md")
+            self.progress("Plan concluído. Plano aprovado: .harness/plan/final.md" if self.module == "plan"
+                          else "Init concluído. Prompt aprovado: .harness/prompts/final.md")
             self.query_one("#init-view", Button).display = True
         except asyncio.CancelledError:
             if self.is_mounted and self.is_current:
                 self.query_one(InitDashboard).finish("cancelled")
-                self.progress("Init interrompido. O projeto não foi marcado como concluído.")
+                self.progress(f"{self.module.title()} interrompido. O módulo não foi marcado como concluído.")
                 self.query_one("#init-retry", Button).display = True
         except (InitError, OSError, ValueError) as exc:
             if self.is_mounted:
                 self.query_one(InitDashboard).finish("failed")
                 self.error(str(exc))
-                self.progress("Init não concluído. Os registros disponíveis ficaram em .harness.")
+                self.progress(f"{self.module.title()} não concluído. Os registros disponíveis ficaram em .harness.")
                 self.query_one("#init-retry", Button).display = True
         finally:
             self.busy = False
@@ -171,7 +177,7 @@ class InitExecutionStep(Step):
         if key in ("init-view", "init-retry", "init-close"):
             event.prevent_default()
             if key == "init-view" and self.final_path:
-                self.wizard.push_screen(FinalPromptStep(self.final_path))
+                self.wizard.push_screen(FinalPromptStep(self.final_path, module=self.module))
             elif key == "init-retry":
                 self.start()
             elif key == "init-close":
@@ -186,7 +192,7 @@ class InitExecutionStep(Step):
 
 class PendingModuleStep(Step):
     def __init__(self, module: str) -> None:
-        super().__init__(f"{module} · próxima etapa", "O init foi concluído. Este módulo ainda será implementado.", 1)
+        super().__init__(f"{module} · próxima etapa", "O plan foi concluído. O build ainda será implementado.", 1)
 
     def fields(self) -> ComposeResult:
-        yield Static("O prompt aprovado está em .harness/prompts/final.md. Use Esc para voltar.", markup=False)
+        yield Static("O plano aprovado está em .harness/plan/final.md. Use Esc para voltar.", markup=False)

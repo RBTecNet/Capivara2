@@ -121,16 +121,21 @@ class FilePromptStep(Step):
 
 class ConfirmStep(Step):
     def __init__(self) -> None:
-        super().__init__("Executar agora?", "Confira a configuração para iniciar a revisão documental e as entrevistas.", 5)
+        super().__init__("Executar agora?", "Confira a configuração para iniciar o módulo documental.", 5)
 
     def on_mount(self) -> None:
-        if suggested_module(self.wizard.state.project_dir) != "init":
+        if self.wizard.state.module == "plan":
+            self.query_one("#hint", Static).update("Plan documental: divide o prompt aprovado em tasks pequenas e revisa a fidelidade à origem. Reexecutar substitui somente o plan e invalida o build.")
+        elif suggested_module(self.wizard.state.project_dir) != "init":
             self.query_one("#hint", Static).update("Executar o init novamente substitui os artefatos anteriores em .harness e reinicia o fluxo do projeto.")
 
     def fields(self) -> ComposeResult:
         state = self.wizard.state
         yield Static(f"Projeto: {state.project_dir}", classes="summary", markup=False)
         source = f"Arquivo · {state.prompt_file}" if state.prompt_source == "file" else "Escrito manualmente"
+        yield Static(f"Módulo: {state.module}", classes="summary", markup=False)
+        if state.module == "plan":
+            source = "Prompt aprovado do init · .harness/prompts/final.md"
         if state.prompt_source == "mcp" and state.mcp_context:
             context = state.mcp_context
             source = f"MCP · {context.instance_name} · {context.project.name} ({context.project.slug})"
@@ -155,7 +160,7 @@ class ConfirmStep(Step):
         self.wizard.state.execute_requested = event.option.id == "yes"
         if self.wizard.state.execute_requested:
             from .init_ui import InitExecutionStep
-            self.wizard.push_screen(InitExecutionStep())
+            self.wizard.push_screen(InitExecutionStep(module=self.wizard.state.module))
         else:
             self.wizard.push_screen(DoneStep(False))
 
@@ -168,7 +173,7 @@ class DoneStep(Step):
         super().__init__(title, hint, 5)
 
     def fields(self) -> ComposeResult:
-        yield Static("Os dados deste init ficaram somente nesta sessão. Nenhum agente foi iniciado e nenhum arquivo de projeto foi gerado.",
+        yield Static("Esta configuração ficou somente nesta sessão. Nenhum agente foi iniciado e nenhum arquivo de projeto foi gerado.",
                      classes="context")
         yield Button("Fechar", variant="primary", id="close")
 
@@ -247,7 +252,7 @@ class HarnessApp(App[WizardState]):
             self.screen.error(str(exc))
             return
         self.push_screen(ChoiceStep("Qual função deseja executar?", "Use ↑ e ↓ para escolher; Enter para confirmar.", 1, "function", [
-            ("init", "init", False), ("plan", "plan · próxima etapa", selected != "plan"),
+            ("init", "init", False), ("plan", "plan", selected == "init"),
             ("build", "build · próxima etapa", selected != "build")], selected=selected))
 
     def show_sources(self) -> None:
@@ -265,7 +270,24 @@ class HarnessApp(App[WizardState]):
     def choose(self, screen: ChoiceStep, key: str) -> None:
         if screen.kind == "function":
             if key == "init":
+                self.state.module = "init"
+                if self.state.prompt_source == "init":
+                    self.state.prompt_source = "manual"
+                    self.state.prompt = ""
                 self.show_sources()
+            elif key == "plan":
+                from .plan_artifacts import load_init
+                try:
+                    source = load_init(self.state.project_dir)
+                except InitError as exc:
+                    screen.error(str(exc))
+                    return
+                self.state.module = "plan"
+                self.state.prompt_source = "init"
+                self.state.prompt = source["approved_prompt"]
+                self.state.prompt_file = self.state.project_dir / ".harness/prompts/final.md"
+                self.state.mcp_context = None
+                self.show_providers("writer")
             else:
                 from .init_ui import PendingModuleStep
                 self.push_screen(PendingModuleStep(key))

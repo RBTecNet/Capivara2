@@ -4,6 +4,15 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class PlanItem:
+    id: str
+    title: str
+    kind: str
+    creation: str = "waiting"
+    validation: str = "waiting"
+
+
+@dataclass(frozen=True)
 class InitEvent:
     kind: str
     stage: str
@@ -16,3 +25,10 @@ class InitEvent:
     questions: int
     answers: int
     inferences: int
+    module: str = "init"
+    phase_number: int | None = None
+    phases_total: int = 0
+    phases_approved: int = 0
+    tasks_total: int = 0
+    tasks_approved: int = 0
+    items: tuple[PlanItem, ...] = ()

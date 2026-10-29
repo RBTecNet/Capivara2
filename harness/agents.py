@@ -63,10 +63,11 @@ class CLIAgents:
             elif selection.effort != "default":
                 raise AgentError("Selecione um modelo explícito do OpenCode para aplicar um effort.")
             return command, "opencode"
-        raise AgentError(f"Configure agents.{provider}.command no catálogo para usar o CLI {PROVIDERS.get(provider, provider)} no init documental.")
+        raise AgentError(f"Configure agents.{provider}.command no catálogo para usar o CLI {PROVIDERS.get(provider, provider)} nos módulos documentais.")
 
     async def generate(self, selection: AgentSelection, role: str, prompt: str, schema: dict,
                        store: ArtifactStore, call_id: int) -> str:
+        log_root = ".harness/plan" if store.root.name == "plan" else ".harness"
         prefix = f"log/{role}-{call_id:04d}"
         store.write(prefix + ".input.txt", prompt)
         store.json(prefix + ".schema.json", schema)
@@ -127,13 +128,13 @@ class CLIAgents:
             raise
         except TimeoutError:
             await stop()
-            raise AgentError(f"{PROVIDERS[selection.provider]} excedeu o tempo de resposta. Os logs foram preservados em .harness/log.") from None
+            raise AgentError(f"{PROVIDERS[selection.provider]} excedeu o tempo de resposta. Os logs foram preservados em {log_root}/log.") from None
         except Exception:
             await stop()
-            raise AgentError("Falha na comunicação com o CLI. Consulte os logs em .harness/log.") from None
+            raise AgentError(f"Falha na comunicação com o CLI. Consulte os logs em {log_root}/log.") from None
         stdout = b"".join(stdout_parts).decode("utf-8", errors="replace")
         if process.returncode != 0:
-            raise AgentError(f"{PROVIDERS[selection.provider]} encerrou com código {process.returncode}. Consulte .harness/{prefix}.stderr.log.")
+            raise AgentError(f"{PROVIDERS[selection.provider]} encerrou com código {process.returncode}. Consulte {log_root}/{prefix}.stderr.log.")
         if mode == "codex":
             for line in stdout.splitlines():
                 try:
@@ -142,7 +143,7 @@ class CLIAgents:
                     continue
                 item = event.get("item", {})
                 if item.get("type") in ("command_execution", "file_change", "mcp_tool_call", "web_search"):
-                    raise AgentError("O agente tentou usar ferramentas durante o init documental. A execução não foi aprovada.")
+                    raise AgentError("O agente tentou usar ferramentas durante a execução documental. A execução não foi aprovada.")
             if not output.is_file():
                 raise AgentError("O Codex não entregou uma resposta final. Consulte os logs da chamada.")
             return output.read_text(encoding="utf-8")
@@ -163,7 +164,7 @@ class CLIAgents:
                 except ValueError:
                     continue
                 if event.get("type") in ("tool_use", "tool_call"):
-                    raise AgentError("O OpenCode tentou usar ferramentas durante o init documental.")
+                    raise AgentError("O OpenCode tentou usar ferramentas durante a execução documental.")
                 part = event.get("part", {})
                 if event.get("type") == "text" and isinstance(part.get("text"), str):
                     parts.append(part["text"])

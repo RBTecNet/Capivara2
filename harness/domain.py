@@ -72,6 +72,7 @@ class WizardState:
     reviewer: AgentSelection | None = None
     reuse_reviewer: bool = True
     execute_requested: bool = False
+    module: str = "init"
 
 
 def resolve_project(value: str, launch_dir: Path) -> Path:

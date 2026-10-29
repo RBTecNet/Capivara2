@@ -65,7 +65,12 @@ def suggested_module(project_dir: Path) -> str:
         return "init"
     if digest(final.read_text(encoding="utf-8")) != completed.get("prompt_sha256"):
         return "init"
-    return "build" if modules.get("plan", {}).get("status") == "completed" else "plan"
+    from .plan_artifacts import load_init, plan_completed
+    try:
+        load_init(project_dir)
+    except InitError:
+        return "init"
+    return "build" if plan_completed(project_dir, completed["prompt_sha256"]) else "plan"
 
 
 class ArtifactStore:
@@ -112,7 +117,7 @@ class ArtifactStore:
         except BlockingIOError:
             self.lock.close()
             self.lock = None
-            raise InitError("Já existe um init em execução para este projeto.") from None
+            raise InitError("Já existe um módulo em execução para este projeto.") from None
         # Reexecutar init substitui os artefatos anteriores e invalida plan/build.
         for child in self.root.iterdir():
             if child.name == ".init.lock":

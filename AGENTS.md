@@ -18,8 +18,14 @@
   quando o terminal não oferecer suporte a imagens nativas.
 - Manter o repositório somente local. Não adicionar remotos nem publicar ou
   enviar commits até que o usuário autorize explicitamente.
-- Desenvolver uma etapa por vez. Implementar somente o `init` documental agora;
-  `plan` e `build` ficam para etapas posteriores.
+- Desenvolver uma etapa por vez. Implementar `init` e `plan` documentais;
+  `build` fica para uma etapa posterior.
+- O plan exige init aprovado e íntegro, preserva suas fases e divide cada fase
+  em tasks pequenas. Cada chamada começa sem histórico; o escritor recebe só
+  uma task. Revisar tasks, fases e plano completo até aprovação explícita.
+- O plan só compara documentação com a origem. Não executar testes nem verificar
+  ambiente, gerar código ou prescrever testes de validação ao build. A fase 0
+  documenta stack e dependências de desenvolvimento e testes já definidas no init.
 - Todo artefato e status de módulos fica em `.harness` no projeto selecionado:
   logs, entrevistas (`enterviews`), prompts, contexto e controle. A aplicação
   futura pertence à raiz do projeto; todo o estado do harness fica em `.harness`.
