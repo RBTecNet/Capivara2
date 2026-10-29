@@ -43,6 +43,13 @@ def plan_completed(project_dir: Path, source_hash: str) -> bool:
         plan = FinalPlan.model_validate(store.read_json("final.json"))
         markdown = store.path("final.md").read_text(encoding="utf-8")
         approval = store.read_json("control/approval.json")
+        if plan.requirements:
+            from .plan_control import version
+            from .plan_coverage import check_assignments
+            check_assignments(plan.phases, {r.id: r for r in plan.requirements})
+            if any(approval.get("approved_versions", {}).get(task.id) != version(task)
+                   for phase in plan.phases for task in phase.tasks):
+                return False
         return (plan.source_prompt_sha256 == source_hash and plan.render() == markdown
                 and approval["source_prompt_sha256"] == source_hash
                 and digest(markdown) == status.get("plan_sha256") == approval["plan_sha256"]

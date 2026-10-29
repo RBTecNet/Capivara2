@@ -25,6 +25,7 @@ class PlanAgents:
         self.invalid = 0
         self.cancel = False
         self.on_generate = None
+        self.repairs = []
 
     async def generate(self, selection, role, prompt, schema, store, call_id):
         envelope = json.loads(prompt.rsplit("\n\nREQUEST:\n", 1)[1])
@@ -50,12 +51,32 @@ class PlanAgents:
             else:
                 seeds = [(f"{verb} tarefa", f"Permitir {verb} tarefas na interface em português.",
                           "Permitir adicionar, editar, concluir e excluir tarefas.") for verb in ("adicionar", "editar", "concluir", "excluir")]
-            return json.dumps({"tasks": [{"title": title, "scope": scope, "source_quotes": [quote]}
-                                         for title, scope, quote in seeds]})
+            tasks = [{"title": title, "scope": scope, "source_quotes": [quote], "coverage": []}
+                     for title, scope, quote in seeds]
+            requirements = data["requirements"]
+            activities = [r for r in requirements if r["kind"] in ("activity", "technology", "tool")]
+            if origin["number"] == 0:
+                for r in activities:
+                    index = 1 if "Playwright" in r["text"] else 0
+                    tasks[index]["coverage"].append({"requirement_id": r["id"], "excerpt": r["text"]})
+            elif origin["number"] == 1:
+                tasks[0]["coverage"] = [{"requirement_id": r["id"], "excerpt": r["text"]} for r in activities]
+            else:
+                for task, verb in zip(tasks, ("adicionar", "editar", "concluir", "excluir")):
+                    task["coverage"] = [{"requirement_id": activities[0]["id"], "excerpt": verb}]
+            return json.dumps({"tasks": tasks})
         if operation == "write_task":
             seed = data["seed"]
             return json.dumps({"title": seed["title"], "objective": seed["scope"],
                 "implementation_steps": [seed["scope"]], "deliverables": [seed["title"]]})
+        if operation == "reassess_phase":
+            if self.repairs:
+                return json.dumps(self.repairs.pop(0))
+            return json.dumps({"summary": "Reavaliar apenas o recorte atribuído.",
+                "decisions": [{"issue_id": i["id"], "task_id": i["task_id"],
+                    "decision": "A task deve atender apenas seu recorte; não cobrar responsabilidades de outras tasks."}
+                    for i in data["scope_decisions"]["issues"] if i["status"] == "open"],
+                "corrections": [], "additions": [], "structural_changes": []})
         reviews = {"review_task": self.task_reviews, "review_phase": self.phase_reviews, "review_plan": self.plan_reviews}
         if operation in reviews:
             queue = reviews[operation]

@@ -26,6 +26,19 @@
 - O plan só compara documentação com a origem. Não executar testes nem verificar
   ambiente, gerar código ou prescrever testes de validação ao build. A fase 0
   documenta stack e dependências de desenvolvimento e testes já definidas no init.
+- O plan descreve implementação futura, sem executá-la. Preservar infraestrutura
+  explicitamente pedida; não confundir isso com prescrever estratégias de testes.
+- Atividades explícitas de QA herdadas do init ficam rastreadas como responsabilidade
+  do build, sem gerar roteiros de testes no plan. Validação funcional de campos e
+  preparação da infraestrutura continuam nas tasks. A fase 0 somente cataloga
+  tecnologias e ferramentas; suas finalidades não são ordens de executar testes.
+- Tasks declaram responsabilidades por IDs e recortes literais dos requisitos.
+  Revisar cada task apenas em seu escopo e conferir cobertura coletivamente.
+  Remover, dividir e consolidar são operações estruturadas e validadas em lote
+  antes de novas redações. Não enviar remoção como uma instrução ao escritor.
+- Repetições sem avanço acionam reavaliação documental da fase. Registrar pendências,
+  versões e decisões de escopo explícitas, mantendo chamadas sem histórico e sem
+  aprovação automática por número de tentativas.
 - Todo artefato e status de módulos fica em `.harness` no projeto selecionado:
   logs, entrevistas (`enterviews`), prompts, contexto e controle. A aplicação
   futura pertence à raiz do projeto; todo o estado do harness fica em `.harness`.

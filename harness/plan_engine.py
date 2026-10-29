@@ -6,9 +6,12 @@ import re
 
 from .artifacts import InitError, digest
 from .plan_artifacts import PlanStore, load_init
+from .plan_control import IssueLedger, prepare_changes, stub, version
+from .plan_coverage import (build_requirements, check_assignments, check_seed,
+                            coverage_map, delegate_validations, requests_structural_operation)
 from .plan_instructions import REVIEWER, WRITER
 from .plan_models import (FinalPlan, PhaseOutline, PlannedPhase, PlannedTask,
-                          PlanReview, TaskContent, TaskSeed)
+                          PlanRepair, PlanReview, TaskContent, TaskSeed, agent_schema)
 from .run_events import InitEvent, PlanItem
 
 
@@ -29,6 +32,13 @@ class PlanEngine:
         self.approved_phases = set()
         self.review_id = 0
         self.item_states = {}
+        self.requirements = {}
+        self.ledger = IssueLedger()
+        self.task_sequences = {}
+        self.created_tasks = set()
+        self.approved_versions = {}
+        self.pending_feedback = {}
+        self.repair_id = 0
 
     def item_state(self, item_id, **states):
         self.item_states.setdefault(item_id, {}).update(states)
@@ -72,7 +82,7 @@ class PlanEngine:
         self.operations += 1
         feedback = ""
         selection = self.state.reviewer if role == "reviewer" else self.state.writer
-        schema = model.model_json_schema()
+        schema = agent_schema(model)
         while True:
             self.call_id += 1
             # Nenhum histórico é reutilizado, nem em correções de formato.
@@ -124,58 +134,77 @@ class PlanEngine:
             self.origins[phase["number"]].update({key: phase[key] for key in ("number", "title", "goal", "depends_on")})
 
     def check_seed(self, seed, number):
-        text = self.origins[number]["text"]
-        if any(not quote.strip() or quote not in text for quote in seed.source_quotes):
-            raise ValueError("As referências devem ser recortes literais da fase correspondente; não invente nem concatene citações.")
-
-    def correct_seed(self, task, correction):
-        if correction.get("replacement_seed") is not None:
-            task.seed = TaskSeed.model_validate(correction["replacement_seed"])
-
-    def new_task(self, phase, seed):
-        number = max((int(task.id.split("-T")[1]) for task in phase.tasks), default=0) + 1
-        return self.new_task_stub(phase.number, seed, number)
+        check_seed(seed, number, self.origins[number]["text"], self.requirements)
 
     def checkpoint(self):
         self.store.json("control/checkpoint.json", {"round": self.round, "phase": self.phase_number,
             "approved_tasks": sorted(self.approved_tasks), "approved_phases": sorted(self.approved_phases),
+            "approved_versions": self.approved_versions, "task_sequences": self.task_sequences,
             "phases": [phase.model_dump() for phase in self.phases]})
+        self.store.json("control/coverage.json", coverage_map(self.phases, self.requirements))
+        self.store.json("control/issues.json", self.ledger.dump())
         self.emit("counts_changed")
 
+    def task_context(self, phase, task):
+        assigned = {claim.requirement_id for claim in task.seed.coverage}
+        return {"objective": self.source["document"]["objective"],
+            "constraints": self.source["document"]["constraints"],
+            "assigned_requirements": [self.requirements[key].model_dump() for key in sorted(assigned)],
+            "scope_decisions": self.ledger.context({task.id}),
+            "technology": {"stack": self.source["document"]["stack"],
+                           "tools": self.source["document"]["tools"]} if phase.number else {}}
+
     def review_data(self, phase=None, task=None):
-        data = {"source": self.source}
-        if phase is not None:
-            data["phase_source"] = self.origins[phase.number]
         if task is not None:
+            data = self.task_context(phase, task)
             data["task"] = task.model_dump()
-        elif phase is not None:
-            data["phase"] = phase.model_dump()
+            ids = {claim.requirement_id for claim in task.seed.coverage}
+            data["responsibility_map"] = [entry for entry in coverage_map([phase], self.requirements)
+                                           if entry["requirement"]["id"] in ids]
+            return data
+        phases = [phase] if phase else self.phases
+        data = {"source": self.source, "coverage_map": coverage_map(phases, self.requirements),
+                "scope_decisions": self.ledger.context({t.id for p in phases for t in p.tasks})}
+        if phase is not None:
+            data.update(phase_source=self.origins[phase.number], phase=phase.model_dump())
+            data["review_boundary"] = ("Somente catálogo de tecnologias e ferramentas; finalidades não são execução de QA."
+                                       if phase.number == 0 else
+                                       "Cobertura coletiva somente desta fase. Respeitar delegações ao build e tarefas das outras fases.")
         else:
-            data["phases"] = [phase.model_dump() for phase in self.phases]
+            data["phases"] = [p.model_dump() for p in self.phases]
         return data
+
+    def check_repair(self, value, phases):
+        requirements = self.requirements
+        for phase in phases:
+            selected = [d for d in value.delegations if d.requirement_id in requirements
+                        and requirements[d.requirement_id].phase_number == phase.number]
+            requirements = delegate_validations(requirements, selected, phase.number)
+        if any(d.requirement_id not in requirements or requirements[d.requirement_id].phase_number not in {p.number for p in phases}
+               for d in value.delegations):
+            raise ValueError("A delegação deve apontar requisitos existentes deste recorte.")
+        ids = {t.id for p in phases for t in p.tasks}
+        touched = {c.task_id for c in value.corrections}
+        touched.update(identifier for change in value.structural_changes for identifier in change.task_ids)
+        if not touched.issubset(ids) or any(a.phase_number not in {p.number for p in phases} for a in value.additions):
+            raise ValueError("O reparo deve alterar somente tasks/fases existentes neste recorte de revisão.")
+        return (*prepare_changes(self.phases, value, requirements, self.origins, self.task_sequences), requirements)
 
     async def review(self, scope, phase=None, task=None):
         phases = [phase] if phase is not None else self.phases
-        task_ids = {task.id} if task is not None else {item.id for p in phases for item in p.tasks}
-        phase_ids = {p.number for p in phases}
-
         def check(value):
-            for correction in value.corrections:
-                if correction.task_id not in task_ids:
-                    raise ValueError("A correção deve apontar uma task existente no recorte em revisão.")
-                if correction.replacement_seed is not None:
-                    number = next(p.number for p in phases if any(t.id == correction.task_id for t in p.tasks))
-                    self.check_seed(correction.replacement_seed, number)
-            if task is not None and value.additions:
-                raise ValueError("Na revisão individual, peça correção da única task. Adições pertencem à revisão da fase.")
-            for addition in value.additions:
-                if addition.phase_number not in phase_ids:
-                    raise ValueError("A adição deve pertencer a uma fase em revisão.")
-                target = next(p for p in phases if p.number == addition.phase_number)
-                if addition.after_task_id and addition.after_task_id not in {item.id for item in target.tasks}:
-                    raise ValueError("after_task_id deve ser vazio ou uma task existente nessa fase.")
-                self.check_seed(addition.task, addition.phase_number)
-
+            if task is not None:
+                if value.additions or value.structural_changes or value.delegations:
+                    raise ValueError("Na revisão individual, solicite reavaliação com category=structure; operações são coletivas.")
+                for correction in value.corrections:
+                    if correction.task_id != task.id:
+                        raise ValueError("Corrija somente a task em revisão.")
+                    if requests_structural_operation(correction.instruction):
+                        raise ValueError("Solicite reavaliação com category=structure; remoção não é trabalho do escritor.")
+                    if correction.replacement_seed:
+                        self.check_seed(correction.replacement_seed, phase.number)
+            elif not value.approved:
+                self.check_repair(value, phases)
         verdict = await self.call("reviewer", f"review_{scope}", self.review_data(phase, task), PlanReview, check)
         self.review_id += 1
         self.store.json(f"control/reviews/{self.review_id:04d}.json", {"scope": scope,
@@ -183,75 +212,130 @@ class PlanEngine:
             "review": verdict.model_dump()})
         return verdict
 
-    async def write_task(self, phase, task, correction=None):
+    async def write_task(self, phase, task):
+        correction = self.pending_feedback.pop(task.id, None)
+        must_write = task.id not in self.created_tasks or correction is not None
         self.approved_tasks.discard(task.id)
         self.approved_phases.discard(phase.number)
         while True:
-            if correction:
-                self.correct_seed(task, correction)
-            self.item_state(task.id, creation="running")
-            self.announce("writing_task", f"Escritor redigindo {task.id} com contexto novo.")
-            data = {"task_id": task.id, "phase_number": phase.number, "phase_title": phase.title,
-                    "objective": self.source["document"]["objective"],
-                    "constraints": self.source["document"]["constraints"], "seed": task.seed.model_dump(),
-                    "previous_task": task.content.model_dump() if correction else None,
-                    "correction": correction}
-            task.content = await self.call("writer", "write_task", data, TaskContent)
-            self.store.json(f"phases/{phase.number:02d}/tasks/{task.id}.json", task.model_dump())
+            if correction and correction.get("replacement_seed") is not None:
+                old = task.seed
+                task.seed = TaskSeed.model_validate(correction["replacement_seed"])
+                try:
+                    check_assignments(self.phases, self.requirements)
+                except ValueError:
+                    task.seed = old
+                    return False
+            if must_write:
+                self.item_state(task.id, creation="running")
+                self.announce("writing_task", f"Escritor redigindo {task.id} com contexto novo.")
+                data = {**self.task_context(phase, task), "task_id": task.id,
+                    "phase_number": phase.number, "phase_title": phase.title, "seed": task.seed.model_dump(),
+                    "previous_task": task.content.model_dump() if correction else None, "correction": correction}
+                task.content = await self.call("writer", "write_task", data, TaskContent)
+                self.created_tasks.add(task.id)
+                self.store.json(f"phases/{phase.number:02d}/tasks/{task.id}.json", task.model_dump())
             self.item_state(task.id, creation="completed", validation="running")
-            self.announce("reviewing_task", f"Revisor comparando {task.id} com a origem.")
+            self.announce("reviewing_task", f"Revisor comparando apenas o recorte de {task.id}.")
             verdict = await self.review("task", phase, task)
             if verdict.approved:
-                self.item_state(task.id, validation="completed")
                 self.approved_tasks.add(task.id)
+                self.approved_versions[task.id] = version(task)
+                self.ledger.resolved(task)
+                self.item_state(task.id, validation="completed")
                 self.checkpoint()
-                return
+                return True
             self.item_state(task.id, validation="rejected")
-            self.announce("revision_requested", f"Correção documental solicitada para {task.id}.")
+            self.round += 1
             correction = verdict.corrections[0].model_dump()
+            self.ledger.record(task, verdict.corrections[0])
+            self.checkpoint()
+            self.announce("revision_requested", f"Correção documental solicitada para {task.id}.")
+            if self.ledger.stalled(task) or verdict.corrections[0].category in ("structure", "granularity"):
+                return False
+            must_write = True
 
-    async def apply(self, verdict):
-        affected = set()
-        for correction in verdict.corrections:
-            phase = next(p for p in self.phases if any(t.id == correction.task_id for t in p.tasks))
-            task = next(t for t in phase.tasks if t.id == correction.task_id)
-            self.phase_number = phase.number
-            self.item_state(f"P{phase.number}", validation="rejected")
-            self.item_state(task.id, validation="rejected")
-            await self.write_task(phase, task, correction.model_dump())
-            affected.add(phase.number)
-        # Inserções na mesma posição mantêm a ordem indicada pelo revisor.
-        anchors = {}
-        for addition in verdict.additions:
-            phase = next(p for p in self.phases if p.number == addition.phase_number)
-            task = self.new_task(phase, addition.task)
-            anchor = anchors.get((phase.number, addition.after_task_id), addition.after_task_id)
-            index = next((i + 1 for i, item in enumerate(phase.tasks) if item.id == anchor), 0)
-            phase.tasks.insert(index, task)
-            self.approved_phases.discard(phase.number)
-            self.item_state(f"P{phase.number}", validation="rejected")
-            anchors[(phase.number, addition.after_task_id)] = task.id
-            self.phase_number = phase.number
-            await self.write_task(phase, task)
-            affected.add(phase.number)
+    def apply(self, verdict):
+        result, sequences, dirty, affected, removed, feedback, requirements = self.check_repair(verdict, self.phases)
+        retired = {task.id: task.model_dump() for phase in self.phases for task in phase.tasks if task.id in removed}
+        # O lote inteiro já foi validado; nenhuma chamada ao escritor ocorreu até aqui.
+        self.phases, self.task_sequences = result, sequences
+        self.requirements = requirements
+        affected.update(requirements[d.requirement_id].phase_number for d in verdict.delegations)
+        self.store.json("control/requirements.json", [r.model_dump() for r in requirements.values()])
+        self.pending_feedback.update(feedback)
+        self.approved_tasks.difference_update(dirty | removed)
+        self.created_tasks.difference_update(removed)
+        for identifier in dirty | removed:
+            self.approved_versions.pop(identifier, None)
+        for identifier, document in retired.items():
+            self.store.json(f"control/retired/{identifier}.json", {"task": document, "repair": self.repair_id + 1})
+            self.store.path(f"phases/{document['phase_number']:02d}/tasks/{identifier}.json").unlink(missing_ok=True)
+        for identifier in dirty:
+            self.item_states.setdefault(identifier, {}).update(validation="rejected" if identifier in self.created_tasks else "waiting")
+        for issue in self.ledger.issues.values():
+            if issue["task_id"] in removed:
+                issue["status"] = "retired"
+        for number in affected:
+            self.approved_phases.discard(number)
+            self.item_state(f"P{number}", validation="rejected")
+        self.repair_id += 1
+        self.store.json(f"control/repairs/{self.repair_id:04d}.json", verdict.model_dump())
+        self.checkpoint()
         return affected
 
+    async def reassess(self, phase):
+        self.item_state(f"P{phase.number}", validation="running")
+        self.announce("reassessing_phase", f"Reavaliando estrutura e pendências repetidas da fase {phase.number}.")
+        data = self.review_data(phase)
+        data["trigger"] = "Devoluções sem avanço ou conflito de responsabilidade. Resolver a causa, sem aprovar por tentativas."
+        def check(repair):
+            self.check_repair(repair, [phase])
+            for decision in repair.decisions:
+                issue = self.ledger.issues.get(decision.issue_id)
+                if not issue or issue["task_id"] != decision.task_id or decision.task_id not in {t.id for t in phase.tasks}:
+                    raise ValueError("Decisões devem apontar pendências existentes desta fase.")
+        repair = await self.call("reviewer", "reassess_phase", data, PlanRepair, check)
+        for decision in repair.decisions:
+            self.ledger.decide(decision)
+        self.apply(repair)
+
     async def validate_phase(self, phase):
-        self.phase_number = phase.number
+        number = phase.number
+        self.phase_number = number
         while True:
-            self.item_state(f"P{phase.number}", validation="running")
-            self.announce("reviewing_phase", f"Revisor validando cobertura da fase {phase.number}.")
+            phase = next(p for p in self.phases if p.number == number)
+            stalled = False
+            for task in phase.tasks:
+                if task.id in self.approved_tasks and self.approved_versions.get(task.id) == version(task):
+                    continue
+                if not await self.write_task(phase, task):
+                    stalled = True
+                    break
+            if stalled:
+                await self.reassess(phase)
+                continue
+            self.item_state(f"P{number}", validation="running")
+            self.announce("reviewing_phase", f"Revisor validando cobertura coletiva da fase {number}.")
             verdict = await self.review("phase", phase)
             if verdict.approved:
-                self.item_state(f"P{phase.number}", validation="completed")
-                self.approved_phases.add(phase.number)
-                self.store.json(f"phases/{phase.number:02d}/approved.json", phase.model_dump())
+                self.approved_phases.add(number)
+                for task in phase.tasks:
+                    self.ledger.resolved(task)
+                self.item_state(f"P{number}", validation="completed")
+                self.store.json(f"phases/{number:02d}/approved.json", phase.model_dump())
                 self.checkpoint()
                 return
             self.round += 1
-            self.item_state(f"P{phase.number}", validation="rejected")
-            self.announce("revision_requested", f"Revisor devolveu recortes da fase {phase.number}.")
-            await self.apply(verdict)
+            for correction in verdict.corrections:
+                task = next(t for t in phase.tasks if t.id == correction.task_id)
+                self.ledger.record(task, correction)
+            self.item_state(f"P{number}", validation="rejected")
+            self.announce("revision_requested", f"Revisor devolveu recortes da fase {number}.")
+            if self.ledger.repeated_phase(number, verdict):
+                await self.reassess(phase)
+            else:
+                self.apply(verdict)
 
     async def run(self):
         if not self.state.writer or not self.state.reviewer:
@@ -259,6 +343,8 @@ class PlanEngine:
         try:
             self.source = self.store.begin(self.state)
             self.prepare_origins()
+            self.requirements = build_requirements(self.source["document"])
+            self.store.json("control/requirements.json", [r.model_dump() for r in self.requirements.values()])
             self.round = 1
             for number, origin in self.origins.items():
                 self.phase_number = number
@@ -266,19 +352,25 @@ class PlanEngine:
                 self.announce("decomposing", f"Decompondo a fase {number} em recortes pequenos.")
 
                 def check(outline):
+                    requirements = delegate_validations(self.requirements, outline.delegations, number)
                     for seed in outline.tasks:
-                        self.check_seed(seed, number)
+                        check_seed(seed, number, origin["text"], requirements)
+                    proposal = PlannedPhase(**{key: origin[key] for key in ("number", "title", "goal", "depends_on")},
+                        tasks=[stub(number, seed, f"P{number}-T{i:03d}") for i, seed in enumerate(outline.tasks, 1)])
+                    check_assignments([proposal], requirements)
 
                 outline = await self.call("reviewer", "outline_phase", {
-                    "source": self.source, "phase_source": origin}, PhaseOutline, check)
+                    "source": self.source, "phase_source": origin,
+                    "requirements": [r.model_dump() for r in self.requirements.values() if r.phase_number == number]}, PhaseOutline, check)
+                self.requirements = delegate_validations(self.requirements, outline.delegations, number)
+                self.store.json("control/requirements.json", [r.model_dump() for r in self.requirements.values()])
                 self.store.json(f"phases/{number:02d}/outline.json", outline.model_dump())
                 phase = PlannedPhase(**{key: origin[key] for key in ("number", "title", "goal", "depends_on")},
-                    tasks=[self.new_task_stub(number, seed, i) for i, seed in enumerate(outline.tasks, 1)])
+                    tasks=[stub(number, seed, f"P{number}-T{i:03d}") for i, seed in enumerate(outline.tasks, 1)])
                 self.phases.append(phase)
+                self.task_sequences[number] = len(phase.tasks)
                 self.item_state(f"P{number}", creation="completed")
                 self.checkpoint()
-                for task in list(phase.tasks):
-                    await self.write_task(phase, task)
                 await self.validate_phase(phase)
             while True:
                 self.phase_number = None
@@ -288,7 +380,22 @@ class PlanEngine:
                     break
                 self.round += 1
                 self.announce("revision_requested", "Revisor apontou correções pontuais no plano.")
-                affected = await self.apply(verdict)
+                for correction in verdict.corrections:
+                    task = next(t for p in self.phases for t in p.tasks if t.id == correction.task_id)
+                    self.ledger.record(task, correction)
+                if self.ledger.repeated_phase(-1, verdict):
+                    affected = {next(p.number for p in self.phases if any(t.id == c.task_id for t in p.tasks))
+                                for c in verdict.corrections}
+                    affected.update(a.phase_number for a in verdict.additions)
+                    affected.update(self.requirements[d.requirement_id].phase_number for d in verdict.delegations)
+                    affected.update(next(p.number for p in self.phases if any(t.id == change.task_ids[0] for t in p.tasks))
+                                    for change in verdict.structural_changes)
+                    for phase in list(self.phases):
+                        if phase.number in affected:
+                            self.phase_number = phase.number
+                            await self.reassess(phase)
+                else:
+                    affected = self.apply(verdict)
                 for phase in self.phases:
                     if phase.number in affected:
                         await self.validate_phase(phase)
@@ -297,15 +404,19 @@ class PlanEngine:
                 raise InitError("Os documentos do init mudaram durante o plan. Execute o plan novamente.")
             plan = FinalPlan(title=f"Plano de implementação — {self.source['document']['title']}",
                 objective=self.source["document"]["objective"], source_prompt_sha256=self.source["source_prompt_sha256"],
-                phases=self.phases)
+                phases=self.phases, requirements=list(self.requirements.values()))
             if len(self.approved_phases) != len(self.origins) or len(self.approved_tasks) != sum(len(p.tasks) for p in self.phases):
                 raise InitError("Existem tasks ou fases sem aprovação documental.")
+            check_assignments(self.phases, self.requirements)
+            if any(self.approved_versions.get(t.id) != version(t) for p in self.phases for t in p.tasks):
+                raise InitError("Uma versão de task mudou após sua aprovação.")
             markdown = plan.render()
             self.store.write("final.md", markdown)
             self.store.json("final.json", plan.model_dump())
             self.store.json("control/approval.json", {"plan_sha256": digest(markdown),
                 "source_prompt_sha256": self.source["source_prompt_sha256"], "review": verdict.model_dump(),
-                "approved_tasks": sorted(self.approved_tasks), "approved_phases": sorted(self.approved_phases)})
+                "approved_tasks": sorted(self.approved_tasks), "approved_phases": sorted(self.approved_phases),
+                "approved_versions": self.approved_versions})
             self.announce("completed", "Plan concluído: tasks, fases e plano aprovados.")
             self.store.finish("completed", plan_sha256=digest(markdown),
                 plan_json_sha256=digest(self.store.path("final.json").read_text(encoding="utf-8")),
@@ -322,9 +433,3 @@ class PlanEngine:
             raise
         finally:
             self.store.close()
-
-    @staticmethod
-    def new_task_stub(number, seed, index):
-        return PlannedTask(id=f"P{number}-T{index:03d}", phase_number=number, seed=seed,
-            content=TaskContent(title=seed.title, objective=seed.scope,
-                                implementation_steps=[seed.scope], deliverables=[seed.title]))

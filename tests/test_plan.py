@@ -83,7 +83,7 @@ class PlanTests(unittest.IsolatedAsyncioTestCase):
         await PlanEngine(self.state, agents, on_event=events.append).run()
         writes = [data["current_request"]["data"] for role, data in agents.calls if role == "writer"]
         counts = Counter(data["task_id"] for data in writes)
-        self.assertEqual(counts["P0-T001"], 4)
+        self.assertEqual(counts["P0-T001"], 3)
         self.assertEqual(counts["P0-T002"], 2)
         self.assertEqual(counts["P2-T003"], 2)
         self.assertEqual(counts["P2-T004"], 1)
@@ -100,7 +100,8 @@ class PlanTests(unittest.IsolatedAsyncioTestCase):
         verdict = {**approved_review(), "approved": False, "coverage_complete": False,
             "additions": [{"phase_number": 2, "after_task_id": "P2-T002", "task": {
                 "title": "Persistência das operações", "scope": "Conectar operações à persistência local.",
-                "source_quotes": ["Gerenciar as tarefas."]}}]}
+                "source_quotes": ["Gerenciar as tarefas."],
+                "coverage": [{"requirement_id": "P2-G001", "excerpt": "Gerenciar as tarefas."}]}}]}
         agents.plan_reviews = [verdict]
         path = await PlanEngine(self.state, agents).run()
         plan = json.loads(path.with_suffix(".json").read_text())
@@ -113,8 +114,10 @@ class PlanTests(unittest.IsolatedAsyncioTestCase):
     async def test_wrong_outline_can_be_corrected_without_trapping_writer_in_the_wrong_scope(self):
         agents = PlanAgents()
         verdict = rejected("P0-T001", "Corrija também o recorte: preservar Python como stack.")
-        replacement = {"title": "Runtime Python aprovado", "scope": "Preparar somente Python e sua biblioteca padrão.",
-                       "source_quotes": ["Python"]}
+        replacement = {"title": "Runtime Python aprovado", "scope": "Preparar Python e preservar SQLite como ferramenta de persistência.",
+                       "source_quotes": ["Python"], "coverage": [
+                           {"requirement_id": "P0-S001", "excerpt": "Aplicação: Python. Atende ao uso local."},
+                           {"requirement_id": "P0-T001", "excerpt": "SQLite: Persistir tarefas no computador."}]}
         verdict["corrections"][0]["replacement_seed"] = replacement
         agents.task_reviews = [verdict]
         final = await PlanEngine(self.state, agents).run()

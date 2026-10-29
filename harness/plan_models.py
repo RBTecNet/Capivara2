@@ -7,14 +7,52 @@ from pydantic import Field, model_validator
 from .init_models import DocumentModel
 
 
+def agent_schema(model):
+    """Schema estrito para agentes; defaults continuam aceitos na leitura de planos antigos."""
+    schema = model.model_json_schema()
+    def strict(node):
+        if isinstance(node, dict):
+            node.pop("default", None)
+            if "properties" in node:
+                node["required"] = list(node["properties"])
+            for value in node.values():
+                strict(value)
+        elif isinstance(node, list):
+            for value in node:
+                strict(value)
+    strict(schema)
+    return schema
+
+
+class Requirement(DocumentModel):
+    id: str
+    phase_number: int
+    kind: Literal["activity", "technology", "tool", "goal", "deliverable", "criterion"]
+    text: str
+    execution_owner: Literal["tasks", "build", "collective"] = "tasks"
+    delegation_reason: str = ""
+
+
+class CoverageClaim(DocumentModel):
+    requirement_id: str = Field(min_length=1)
+    excerpt: str = Field(min_length=1)
+
+
 class TaskSeed(DocumentModel):
     title: str = Field(min_length=1)
     scope: str = Field(min_length=1)
     source_quotes: list[str] = Field(min_length=1)
+    coverage: list[CoverageClaim] = Field(default_factory=list)
+
+
+class ValidationDelegation(DocumentModel):
+    requirement_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
 
 
 class PhaseOutline(DocumentModel):
-    tasks: list[TaskSeed] = Field(min_length=1)
+    tasks: list[TaskSeed]
+    delegations: list[ValidationDelegation] = Field(default_factory=list)
 
 
 class TaskContent(DocumentModel):
@@ -37,7 +75,7 @@ class PlannedPhase(DocumentModel):
     title: str = Field(min_length=1)
     goal: str = Field(min_length=1)
     depends_on: list[int]
-    tasks: list[PlannedTask] = Field(min_length=1)
+    tasks: list[PlannedTask]
 
 
 class TaskCorrection(DocumentModel):
@@ -45,12 +83,38 @@ class TaskCorrection(DocumentModel):
     reason: str = Field(min_length=1)
     instruction: str = Field(min_length=1)
     replacement_seed: TaskSeed | None
+    category: Literal["fidelity", "coverage", "granularity", "test_strategy", "structure"] = "fidelity"
 
 
 class TaskAddition(DocumentModel):
     phase_number: int = Field(ge=0)
     after_task_id: str  # vazio insere no começo da fase
     task: TaskSeed
+
+
+class StructuralChange(DocumentModel):
+    operation: Literal["remove", "split", "merge"]
+    task_ids: list[str] = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    replacements: list[TaskSeed]
+
+    @model_validator(mode="after")
+    def shape(self):
+        if len(set(self.task_ids)) != len(self.task_ids):
+            raise ValueError("Não repita IDs numa operação estrutural.")
+        if self.operation == "remove" and self.replacements:
+            raise ValueError("Remoção não possui replacements.")
+        if self.operation == "split" and (len(self.task_ids) != 1 or len(self.replacements) < 2):
+            raise ValueError("Divisão substitui uma task por pelo menos duas.")
+        if self.operation == "merge" and (len(self.task_ids) < 2 or len(self.replacements) != 1):
+            raise ValueError("Consolidação substitui pelo menos duas tasks por uma.")
+        return self
+
+
+class ScopeDecision(DocumentModel):
+    issue_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    decision: str = Field(min_length=1)
 
 
 class PlanReview(DocumentModel):
@@ -62,16 +126,35 @@ class PlanReview(DocumentModel):
     summary: str = Field(min_length=1)
     corrections: list[TaskCorrection]
     additions: list[TaskAddition]
+    structural_changes: list[StructuralChange] = Field(default_factory=list)
+    delegations: list[ValidationDelegation] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def consistent(self):
         checks = (self.matches_source, self.coverage_complete, self.tasks_are_small, self.no_test_strategy)
-        if self.approved and (not all(checks) or self.corrections or self.additions):
+        if self.approved and (not all(checks) or self.corrections or self.additions or self.structural_changes or self.delegations):
             raise ValueError("Aprovar exige fidelidade, cobertura, tasks pequenas e nenhuma estratégia de testes ou pendência.")
-        if not self.approved and not (self.corrections or self.additions):
+        if not self.approved and all(checks):
+            raise ValueError("Se todos os critérios estão atendidos, aprove. Reprovações exigem um critério objetivo não atendido.")
+        if not self.approved and not (self.corrections or self.additions or self.structural_changes or self.delegations):
             raise ValueError("Uma reprovação exige correções pontuais ou tasks ausentes, com orientação concreta.")
         if len({item.task_id for item in self.corrections}) != len(self.corrections):
             raise ValueError("Agrupe as correções de cada task em uma única orientação.")
+        return self
+
+
+class PlanRepair(DocumentModel):
+    summary: str = Field(min_length=1)
+    decisions: list[ScopeDecision]
+    corrections: list[TaskCorrection]
+    additions: list[TaskAddition]
+    structural_changes: list[StructuralChange]
+    delegations: list[ValidationDelegation] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def actionable(self):
+        if not any((self.decisions, self.corrections, self.additions, self.structural_changes, self.delegations)):
+            raise ValueError("Reavaliação deve resolver pendências ou corrigir a estrutura; nunca aprova automaticamente.")
         return self
 
 
@@ -81,6 +164,7 @@ class FinalPlan(DocumentModel):
     source_prompt_sha256: str
     context_policy: Literal["fresh"] = "fresh"
     phases: list[PlannedPhase] = Field(min_length=1)
+    requirements: list[Requirement] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def valid_structure(self):
@@ -106,6 +190,9 @@ class FinalPlan(DocumentModel):
         for phase in self.phases:
             sections.append(f"## Fase {phase.number} — {phase.title}\n\n{phase.goal}\n\n"
                 f"Dependências: {', '.join(f'fase {n}' for n in phase.depends_on) or 'nenhuma'}.")
+            if not phase.tasks:
+                sections.append("As atividades de validação desta fase permanecem sob responsabilidade do build; "
+                                "o plan preserva suas referências sem gerar instruções de testes.")
             for task in phase.tasks:
                 content = task.content
                 sections.append(f"### {task.id} — {content.title}\n\n{content.objective}\n\n"
@@ -113,4 +200,7 @@ class FinalPlan(DocumentModel):
                     "\n\n#### Passos de implementação\n\n" + "\n".join(f"- {s}" for s in content.implementation_steps) +
                     "\n\n#### Entregáveis\n\n" + "\n".join(f"- {s}" for s in content.deliverables) +
                     "\n\n#### Referências da origem\n\n" + "\n".join(f"> {s.replace(chr(10), chr(10) + '> ')}" for s in task.seed.source_quotes))
+                if task.seed.coverage:
+                    sections.append("Responsabilidades: " + "; ".join(
+                        f"{claim.requirement_id}: {claim.excerpt}" for claim in task.seed.coverage))
         return "\n\n".join(sections) + "\n"

@@ -40,7 +40,8 @@ PLAN_STAGES = {
     "starting": (0, "Prompt do init"), "decomposing": (1, "Divisão da fase"),
     "writing_task": (2, "Redação da task"), "reviewing_task": (3, "Revisão da task"),
     "reviewing_phase": (4, "Revisão da fase"), "reviewing_plan": (4, "Revisão do plano"),
-    "revision_requested": (3, "Correção documental"), "completed": (5, "Finalizando"),
+    "revision_requested": (3, "Correção documental"), "reassessing_phase": (4, "Reavaliação de escopo"),
+    "completed": (5, "Finalizando"),
 }
 PLAN_PIPELINE = ("Origem", "Divisão", "Tasks", "Revisão", "Fases", "Concluído")
 STATUS = {"ready": ("pronto", MUTED), "running": ("em andamento", YELLOW),
