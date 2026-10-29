@@ -186,7 +186,7 @@ class DoneStep(Step):
 
 
 class HarnessApp(App[WizardState]):
-    TITLE = "CAPIVARA2"
+    TITLE = "CAPIVARA"
     SUB_TITLE = "Wizard de inicialização"
     ENABLE_COMMAND_PALETTE = False
     BINDINGS = [Binding("ctrl+q", "quit", "Sair", priority=True),
@@ -218,8 +218,8 @@ class HarnessApp(App[WizardState]):
     .mcp-field:focus { border: none; background: #244d50; }
     .field-label { height: auto; color: #b4c4cf; }
     #mcp-save { margin-top: 1; }
-    #init-progress, #init-elapsed { height: auto; margin-bottom: 1; }
-    #init-log { height: 8; border: round #345867; margin-bottom: 1; }
+    .execution-screen { background: #0b1720; }
+    .execution-screen Footer { background: #0b1720; color: #7e939e; }
     #interview-free { height: 8; }
     #final-prompt { height: 18; }
     Button { min-width: 16; }

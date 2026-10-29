@@ -8,6 +8,10 @@
 - Conferir o conteúdo do commit e o estado final do Git. Não incluir `.venv`,
   caches, credenciais ou arquivos temporários.
 - Informar ao usuário como testar e o identificador do commit da rodada.
+- A identidade visual do dashboard é CAPIVARA; o comando instalado continua
+  `capivara2`. Cada módulo deve exibir seus próprios dados operacionais reais.
+  Não copiar métricas fictícias da referência visual; indicar "não medido"
+  quando uma informação ainda não for coletada.
 - Manter o repositório somente local. Não adicionar remotos nem publicar ou
   enviar commits até que o usuário autorize explicitamente.
 - Desenvolver uma etapa por vez. Implementar somente o `init` documental agora;

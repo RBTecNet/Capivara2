@@ -129,6 +129,25 @@ Uma pasta `.harness` não reconhecida é preservada e gera uma mensagem, em vez 
 ser apagada. Ao reabrir um projeto cujo prompt final aprovado continua íntegro,
 `plan` é destacado como próximo módulo. `plan` e `build` ainda não executam trabalho.
 
+## Painel de execução
+
+O dashboard do init usa a marca **CAPIVARA**, mascote em blocos de terminal, fundo
+escuro e painéis ciano. A faixa superior mostra projeto, módulo, etapa, status e
+duração. Abaixo ficam o pipeline documental, o provedor atual com papel/modelo/effort,
+a telemetria e os eventos recentes.
+
+As informações vêm da execução real: perguntas/respostas, rodada, operações lógicas,
+tentativas de chamada aos CLIs, devoluções para correção e decisões internas inferidas.
+O provedor muda entre escritor e revisor conforme cada chamada. Tokens aparecem como
+“não medido”, pois o harness ainda não contabiliza esse consumo. O painel apresenta
+somente metadados operacionais; prompts, respostas e justificativas completas dos
+agentes continuam nos artefatos, sem serem copiados para a lista de eventos da tela.
+
+Em terminais largos, pipeline e provedor aparecem lado a lado. Em janelas menores,
+os painéis se reorganizam em uma coluna, com rolagem vertical e controles acessíveis
+por Tab. O cabeçalho se reduz quando necessário. As entrevistas continuam usando
+as telas de múltipla escolha durante o andamento do init.
+
 ## Modelos e efforts
 
 O catálogo fica em [harness/harness.toml](harness/harness.toml). A seleção não

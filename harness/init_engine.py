@@ -13,6 +13,7 @@ from .domain import WizardState
 from .init_instructions import REVIEWER, WRITER
 from .init_models import Answer, FinalPrompt, Gap, Interview, Question, Review
 from .interview_policy import internal_question_reason
+from .run_events import InitEvent
 
 
 def normalized(text: str) -> str:
@@ -22,7 +23,8 @@ def normalized(text: str) -> str:
 class InitEngine:
     def __init__(self, state: WizardState, agents: CLIAgents, *,
                  interview: Callable[[Question, int, int], Awaitable[Answer]],
-                 progress: Callable[[str], None] | None = None) -> None:
+                 progress: Callable[[str], None] | None = None,
+                 on_event: Callable[[InitEvent], None] | None = None) -> None:
         self.state = state
         self.agents = agents
         self.interview = interview
@@ -32,12 +34,32 @@ class InitEngine:
         self.round = 0
         self.interviews = []
         self.inferred_decisions = []
+        self.on_event = on_event
+        self.stage = "starting"
+        self.active_role = None
+        self.last_role = None
+        self.operations = 0
+        self.corrections = 0
+        self.question_count = 0
+        self.answer_count = 0
+        self.inference_count = 0
+
+    def emit(self, kind: str) -> None:
+        if self.on_event:
+            self.on_event(InitEvent(kind, self.stage, self.round, self.active_role, self.last_role,
+                                   self.operations, self.call_id, self.corrections,
+                                   self.question_count, self.answer_count, self.inference_count))
 
     def announce(self, stage: str, message: str) -> None:
+        self.stage = stage
+        if stage == "revision_requested":
+            self.corrections += 1
         self.store.event(stage, message, round=self.round)
         self.progress(message)
+        self.emit("stage_changed")
 
     async def call(self, role: str, task: str, data: dict, model, check=None):
+        self.operations += 1
         selection = self.state.reviewer if role == "reviewer" else self.state.writer
         instructions = REVIEWER if role == "reviewer" else WRITER
         context_path = f"control/{role}-context.json"
@@ -46,11 +68,24 @@ class InitEngine:
         feedback = ""
         while True:
             self.call_id += 1
+            self.active_role = self.last_role = role
+            self.emit("agent_started")
             schema = model.model_json_schema()
             prompt = instructions + "\n\nSCHEMA JSON:\n" + json.dumps(schema, ensure_ascii=False) + "\n\nREQUEST:\n" + json.dumps({
                 "preserved_context": history["messages"], "current_request": request,
                 "format_correction": feedback}, ensure_ascii=False)
-            output = await self.agents.generate(selection, role, prompt, schema, self.store, self.call_id)
+            try:
+                output = await self.agents.generate(selection, role, prompt, schema, self.store, self.call_id)
+            except asyncio.CancelledError:
+                self.active_role = None
+                self.emit("agent_cancelled")
+                raise
+            except Exception:
+                self.active_role = None
+                self.emit("agent_failed")
+                raise
+            self.active_role = None
+            self.emit("agent_finished")
             self.store.write(f"log/{role}-{self.call_id:04d}.response.txt", output)
             try:
                 text = output.strip()
@@ -60,9 +95,11 @@ class InitEngine:
                 if check:
                     check(value)
             except (ValueError, ValidationError) as exc:
+                self.corrections += 1
                 feedback = str(exc)
                 self.store.event("format_correction", "Resposta documental devolvida para correção de formato.",
                                  call=self.call_id, role=role, detail=feedback)
+                self.emit("format_correction")
                 continue
             history["messages"].extend([{"role": "user", "content": request},
                                         {"role": "assistant", "content": value.model_dump()}])
@@ -131,9 +168,12 @@ class InitEngine:
                                     "previous_inferred_decisions": self.inferred_decisions},
                                     Interview, complete_interview)
         decisions = [decision.model_dump() for decision in interview.inferred_decisions]
+        self.question_count += len(interview.questions)
+        self.emit("interview_prepared")
         record = {"round": self.round, "questions": interview.model_dump()["questions"], "answers": [],
                   "inferred_decisions": decisions}
         if decisions:
+            self.inference_count += len(decisions)
             self.inferred_decisions.append({"round": self.round, "decisions": decisions})
             self.store.json("control/inferred-decisions.json", self.inferred_decisions)
             self.announce("inferring_internal_tools", f"Escritor inferiu {len(decisions)} decisão(ões) interna(s), sem entrevistar o usuário.")
@@ -152,6 +192,8 @@ class InitEngine:
                 answer = answer.model_copy(update={"label": options[answer.option_id].label, "text": ""})
             record["answers"].append(answer.model_dump())
             self.store.json(filename, record)
+            self.answer_count += 1
+            self.emit("answer_saved")
         self.interviews.append(record)
         self.store.json("control/interviews.json", self.interviews)
 

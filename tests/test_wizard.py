@@ -114,6 +114,8 @@ class WizardTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(app.state.execute_requested)
                 self.assertTrue((self.root / ".harness/prompts/final.md").is_file())
                 self.assertEqual([path.name for path in self.root.iterdir()], [".harness"])
+                app.screen.query_one("#back", Button).focus()
+                await pilot.pause()
                 await pilot.click("#back")
                 self.assertIsInstance(app.screen, ConfirmStep)
                 await pilot.press("down", "enter")

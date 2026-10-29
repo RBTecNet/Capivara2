@@ -2,18 +2,19 @@
 
 import asyncio
 from pathlib import Path
-from time import monotonic
 
 from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.widgets import Button, OptionList, RichLog, Static, TextArea
+from textual.widgets import Button, Footer, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .artifacts import InitError
+from .dashboard import InitDashboard
 from .init_engine import InitEngine
 from .init_models import Answer, Question
+from .run_events import InitEvent
 from .ui import Step
 
 
@@ -94,35 +95,32 @@ class InitExecutionStep(Step):
         self.busy = False
         self.engine = None
         self.final_path = None
-        self.started_at = monotonic()
+        self.add_class("execution-screen")
 
-    def fields(self) -> ComposeResult:
-        yield Static("Iniciando…", id="init-progress", markup=False)
-        yield Static("", id="init-elapsed", markup=False)
-        yield RichLog(wrap=True, highlight=False, markup=False, id="init-log")
-        for label, key in (("Ver prompt final", "init-view"), ("Tentar init novamente", "init-retry"), ("Fechar", "init-close")):
-            button = Button(label, id=key, compact=True)
-            button.display = False
-            yield button
+    def compose(self) -> ComposeResult:
+        agents = {role: agent for role, agent in (("writer", self.wizard.state.writer),
+                                                  ("reviewer", self.wizard.state.reviewer)) if agent is not None}
+        yield InitDashboard(self.wizard.state.project_dir, agents)
+        yield Footer()
 
     def on_mount(self) -> None:
         self.set_interval(1, self.elapsed)
         self.call_after_refresh(self.start)
 
     def focus_field(self) -> None:
-        if self.query("#back"):
-            self.query_one("#back", Button).focus()
+        if self.query(InitDashboard):
+            self.query_one(InitDashboard).focus()
 
     def elapsed(self) -> None:
         if self.busy and self.is_mounted:
-            self.query_one("#init-elapsed", Static).update(f"Tempo da execução: {int(monotonic() - self.started_at)} s · Esc interrompe")
+            self.query_one(InitDashboard).tick()
 
     def start(self) -> None:
         if self.busy or not self.is_mounted or not self.is_current:
             return
         self.busy = True
-        self.started_at = monotonic()
         self.error("")
+        self.query_one(InitDashboard).start()
         self.query_one("#back", Button).label = "Interromper · Esc"
         for button in self.query("#init-retry, #init-close, #init-view"):
             button.display = False
@@ -131,7 +129,11 @@ class InitExecutionStep(Step):
     def progress(self, message: str) -> None:
         if self.is_mounted:
             self.query_one("#init-progress", Static).update(message)
-            self.query_one(RichLog).write(Text(message))
+            self.query_one(InitDashboard).log(message)
+
+    def execution_event(self, event: InitEvent) -> None:
+        if self.is_mounted and self.query(InitDashboard):
+            self.query_one(InitDashboard).update_event(event)
 
     async def ask(self, question: Question, index: int, total: int) -> Answer:
         answer = await self.wizard.push_screen_wait(InterviewStep(question, index, total))
@@ -142,16 +144,19 @@ class InitExecutionStep(Step):
     @work(exclusive=True)
     async def execute(self) -> None:
         try:
-            self.engine = InitEngine(self.wizard.state, self.wizard.agents, interview=self.ask, progress=self.progress)
+            self.engine = InitEngine(self.wizard.state, self.wizard.agents, interview=self.ask, on_event=self.execution_event)
             self.final_path = await self.engine.run()
-            self.progress(f"Init concluído. Prompt aprovado: {self.final_path}")
+            self.query_one(InitDashboard).finish("completed")
+            self.progress("Init concluído. Prompt aprovado: .harness/prompts/final.md")
             self.query_one("#init-view", Button).display = True
         except asyncio.CancelledError:
             if self.is_mounted and self.is_current:
+                self.query_one(InitDashboard).finish("cancelled")
                 self.progress("Init interrompido. O projeto não foi marcado como concluído.")
                 self.query_one("#init-retry", Button).display = True
         except (InitError, OSError, ValueError) as exc:
             if self.is_mounted:
+                self.query_one(InitDashboard).finish("failed")
                 self.error(str(exc))
                 self.progress("Init não concluído. Os registros disponíveis ficaram em .harness.")
                 self.query_one("#init-retry", Button).display = True
