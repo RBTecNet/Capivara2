@@ -39,8 +39,12 @@ def wordmark() -> Text:
 def capybara() -> Text:
     width, height = 34, 20
     rows = [[BACKGROUND] * width for _ in range(height)]
-    outline = ((7, 18), (6, 15), (7, 11), (9, 8), (11, 5), (11, 1), (14, 1),
-               (16, 4), (23, 4), (25, 1), (28, 1), (28, 7), (30, 11), (31, 18))
+    # Perfil: corpo alongado, orelha pequena e arredondada, focinho achatado.
+    outline = ((3, 13), (2, 10), (3, 7), (6, 5), (14, 5), (18, 6),
+               (19, 4), (20, 2), (22, 2), (23, 4), (27, 4), (29, 5),
+               (31, 5), (32, 7), (32, 11), (30, 13), (24, 13),
+               (23, 17), (20, 18), (19, 15), (12, 15), (12, 18),
+               (8, 18), (8, 15), (5, 15))
 
     def inside(x, y):
         contained = False
@@ -54,7 +58,7 @@ def capybara() -> Text:
         return contained
 
     mask = {(x, y) for y in range(height - 1) for x in range(width) if inside(x + 0.5, y + 0.5)}
-    palette = ("#9c6938", "#a9743c", "#b27c40", "#986333", "#ad773b")
+    palette = ("#a1723e", "#a87843", "#b17e46", "#9b6b39", "#ad7940")
     for y in range(height - 1):
         for x in range(width):
             neighbors = ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1))
@@ -62,28 +66,23 @@ def capybara() -> Text:
                 rows[y][x] = "#493b2c" if any(point not in mask for point in neighbors) else palette[(x * 13 + y * 7) % len(palette)]
             elif any(point in mask for point in neighbors):
                 rows[y][x] = "#d93684"
-    for x in (12, 26):
-        for y in (2, 3):
-            rows[y][x] = "#513a2b"
-    for x in (13, 25):
-        for y in (7, 8):
-            rows[y][x] = "#1d2926"
-        rows[7][x] = "#e8bd70"
-    for y in range(9, 18):
-        for x in range(13, 27):
-            if ((x - 19.5) / 7) ** 2 + ((y - 13) / 5) ** 2 <= 1:
-                rows[y][x] = "#bd8e50" if (x + y) % 4 else "#c99b5c"
-    for x in range(17, 24):
-        rows[10][x] = "#785532"
-    for x in (17, 23):
-        for y in (11, 12):
-            rows[y][x] = "#342f23"
-    for y in range(12, 17):
-        rows[y][20] = "#795634"
-    for x in range(16, 25):
-        rows[16][x] = "#765331"
+    for y in (3, 4):
+        rows[y][21] = "#60452c"
+    rows[6][25] = "#293026"
+    rows[7][25] = "#1e251e"
+    rows[6][26] = "#d5ab65"
+    for y in range(8, 12):
+        for x in range(26, 32):
+            if (x, y) in mask:
+                rows[y][x] = "#b58a51" if y < 10 else "#a97b44"
+    rows[9][31] = "#293026"
+    for x in range(28, 32):
+        rows[11][x] = "#65482c"
+    for x in range(6, 21):
+        if (x, 14) in mask:
+            rows[14][x] = "#825a33"
+    for x in (9, 10, 21, 22):
+        rows[17][x] = "#51402a"
     for x in range(3, width - 1):
         rows[-1][x] = "#09b8d4" if x % 4 else BACKGROUND
-    for x, y in ((2, 8), (3, 8), (1, 12), (3, 12), (31, 7), (32, 7), (32, 11)):
-        rows[y][x] = "#e74398"
     return pixel_text(rows)

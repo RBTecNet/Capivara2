@@ -12,6 +12,9 @@
   `capivara2`. Cada módulo deve exibir seus próprios dados operacionais reais.
   Não copiar métricas fictícias da referência visual; indicar "não medido"
   quando uma informação ainda não for coletada.
+- O mascote principal é o PNG original fornecido pelo usuário, sem redesenhar
+  nem alterar o arquivo. Usar a capivara em blocos como fallback automático
+  quando o terminal não oferecer suporte a imagens nativas.
 - Manter o repositório somente local. Não adicionar remotos nem publicar ou
   enviar commits até que o usuário autorize explicitamente.
 - Desenvolver uma etapa por vez. Implementar somente o `init` documental agora;

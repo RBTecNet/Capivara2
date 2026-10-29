@@ -131,10 +131,17 @@ ser apagada. Ao reabrir um projeto cujo prompt final aprovado continua íntegro,
 
 ## Painel de execução
 
-O dashboard do init usa a marca **CAPIVARA**, mascote em blocos de terminal, fundo
+O dashboard do init usa a marca **CAPIVARA**, mascote em PNG, fundo
 escuro e painéis ciano. A faixa superior mostra projeto, módulo, etapa, status e
 duração. Abaixo ficam o pipeline documental, o provedor atual com papel/modelo/effort,
 a telemetria e os eventos recentes.
+
+A imagem fornecida pelo usuário fica em `harness/assets/capivara-engineer.png`,
+preservada sem redesenho nem alterações no arquivo. O cabeçalho usa a imagem
+proporcionalmente em terminais com gráficos Sixel ou Kitty. A negociação acontece
+antes de abrir a TUI; sem suporte gráfico, o mascote muda automaticamente para a
+capivara em blocos, desenhada de perfil com orelha pequena e focinho alongado.
+O funcionamento do harness não depende de suporte a imagens.
 
 As informações vêm da execução real: perguntas/respostas, rodada, operações lógicas,
 tentativas de chamada aos CLIs, devoluções para correção e decisões internas inferidas.

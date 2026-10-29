@@ -11,9 +11,10 @@ from textual.app import ComposeResult
 from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, RichLog, Static
 
-from .dashboard_art import capybara, wordmark
+from .dashboard_art import wordmark
 from .domain import AgentSelection, PROVIDERS
 from .run_events import InitEvent
+from .mascot import Mascot
 
 
 CYAN = "#05bfd8"
@@ -145,7 +146,7 @@ class InitDashboard(VerticalScroll):
                 yield Static("CAPIVARA", id="dash-small-logo")
                 yield Static("INIT · DOCUMENTAÇÃO · CONTROLE DE EXECUÇÃO", id="dash-subtitle")
                 yield Static(f"v{release}", id="dash-version")
-            yield Static(capybara(), id="dash-mascot", name="Capivara documentadora")
+            yield Mascot(id="dash-mascot", name="Capivara documentadora")
             yield Static("CAPIVARA · capivara documentadora", id="dash-tagline")
         with Grid(id="dash-summary"):
             yield DashboardField("PROJETO", f"▱ {self.project_dir}", id="dash-project", tooltip=str(self.project_dir))

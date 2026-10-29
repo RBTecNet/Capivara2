@@ -4,6 +4,7 @@ from pathlib import Path
 from .app import HarnessApp
 from .catalog import Catalog, DEFAULT_CONFIG
 from .mcp_registry import MCPRegistry
+from .mascot import prepare_mascot
 
 
 def main() -> None:
@@ -15,6 +16,7 @@ def main() -> None:
         catalog = Catalog.load(args.config)
     except ValueError as exc:
         parser.error(str(exc))
+    prepare_mascot()
     HarnessApp(catalog=catalog, mcp_registry=MCPRegistry(args.mcp_config)).run()
 
 
