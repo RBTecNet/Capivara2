@@ -1,0 +1,18 @@
+# Catálogo desta primeira etapa. Nenhum CLI é iniciado para consultar modelos.
+# "default" representa usar o padrão do CLI, sem escolher um modelo específico.
+# Cadastre os IDs e efforts reais que deseja disponibilizar na TUI.
+
+[providers.codex]
+# Se houver cache local do Codex, usa os modelos e efforts desse cache.
+# Defina false para usar somente a lista abaixo.
+read_local_cache = true
+models = [{ id = "default", name = "Padrão do CLI", efforts = ["default"] }]
+
+[providers.claude]
+models = [{ id = "default", name = "Padrão do CLI", efforts = ["default"] }]
+
+[providers.opencode]
+models = [{ id = "default", name = "Padrão do CLI", efforts = ["default"] }]
+
+[providers.agy]
+models = [{ id = "default", name = "Padrão do CLI", efforts = ["default"] }]
