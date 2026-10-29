@@ -53,7 +53,7 @@ class Mascot(Container):
     DEFAULT_CSS = """
     Mascot { width: 36; height: 10; align: center middle; }
     Mascot .mascot-png { width: auto; height: 100%; max-width: 100%; }
-    Mascot .mascot-blocks { width: 34; height: 10; }
+    Mascot .mascot-blocks { width: auto; height: auto; max-width: 100%; max-height: 100%; }
     """
 
     def __init__(self, **kwargs) -> None:
@@ -69,6 +69,6 @@ class Mascot(Container):
                 return
             except (OSError, ValueError):
                 self.image_protocol = "blocks"
-        fallback = Static(capybara(), classes="mascot-blocks", name="Capivara em blocos")
-        fallback.tooltip = "Capivara em blocos · fallback para terminais sem imagens nativas"
+        fallback = Static(capybara(), classes="mascot-blocks", name="Capivara ANSI")
+        fallback.tooltip = "Mascote ANSI fornecido · ajuste proporcional para terminais sem imagens nativas"
         yield fallback

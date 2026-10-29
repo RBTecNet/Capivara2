@@ -16,4 +16,4 @@ capivara2 = "harness.__main__:main"
 include = ["harness*"]
 
 [tool.setuptools.package-data]
-harness = ["*.toml", "assets/*.png"]
+harness = ["*.toml", "assets/*.png", "assets/*.ans"]

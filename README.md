@@ -140,7 +140,9 @@ A imagem fornecida pelo usuário fica em `harness/assets/capivara-engineer.png`,
 preservada sem redesenho nem alterações no arquivo. O cabeçalho usa a imagem
 proporcionalmente em terminais com gráficos Sixel ou Kitty. A negociação acontece
 antes de abrir a TUI; sem suporte gráfico, o mascote muda automaticamente para a
-capivara em blocos, desenhada de perfil com orelha pequena e focinho alongado.
+arte ANSI `harness/assets/build-busto-40x13.ans`, fornecida pelo usuário.
+O arquivo original de 40 × 13 é preservado; sua exibição é ajustada proporcionalmente
+para 31 × 10 no cabeçalho atual, mantendo as cores e o enquadramento completo.
 O funcionamento do harness não depende de suporte a imagens.
 
 As informações vêm da execução real: perguntas/respostas, rodada, operações lógicas,

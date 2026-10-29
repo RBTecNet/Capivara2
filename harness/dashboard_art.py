@@ -1,5 +1,8 @@
 """Marca e mascote em blocos de terminal, sem dependências gráficas."""
 
+from pathlib import Path
+
+from rich.console import Console
 from rich.text import Text
 
 
@@ -36,53 +39,30 @@ def wordmark() -> Text:
     return pixel_text(rows)
 
 
-def capybara() -> Text:
-    width, height = 34, 20
-    rows = [[BACKGROUND] * width for _ in range(height)]
-    # Perfil: corpo alongado, orelha pequena e arredondada, focinho achatado.
-    outline = ((3, 13), (2, 10), (3, 7), (6, 5), (14, 5), (18, 6),
-               (19, 4), (20, 2), (22, 2), (23, 4), (27, 4), (29, 5),
-               (31, 5), (32, 7), (32, 11), (30, 13), (24, 13),
-               (23, 17), (20, 18), (19, 15), (12, 15), (12, 18),
-               (8, 18), (8, 15), (5, 15))
+MASCOT_ANSI = Path(__file__).with_name("assets") / "build-busto-40x13.ans"
 
-    def inside(x, y):
-        contained = False
-        previous = outline[-1]
-        for current in outline:
-            x1, y1 = previous
-            x2, y2 = current
-            if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
-                contained = not contained
-            previous = current
-        return contained
 
-    mask = {(x, y) for y in range(height - 1) for x in range(width) if inside(x + 0.5, y + 0.5)}
-    palette = ("#a1723e", "#a87843", "#b17e46", "#9b6b39", "#ad7940")
-    for y in range(height - 1):
-        for x in range(width):
-            neighbors = ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1))
-            if (x, y) in mask:
-                rows[y][x] = "#493b2c" if any(point not in mask for point in neighbors) else palette[(x * 13 + y * 7) % len(palette)]
-            elif any(point in mask for point in neighbors):
-                rows[y][x] = "#d93684"
-    for y in (3, 4):
-        rows[y][21] = "#60452c"
-    rows[6][25] = "#293026"
-    rows[7][25] = "#1e251e"
-    rows[6][26] = "#d5ab65"
-    for y in range(8, 12):
-        for x in range(26, 32):
-            if (x, y) in mask:
-                rows[y][x] = "#b58a51" if y < 10 else "#a97b44"
-    rows[9][31] = "#293026"
-    for x in range(28, 32):
-        rows[11][x] = "#65482c"
-    for x in range(6, 21):
-        if (x, 14) in mask:
-            rows[14][x] = "#825a33"
-    for x in (9, 10, 21, 22):
-        rows[17][x] = "#51402a"
-    for x in range(3, width - 1):
-        rows[-1][x] = "#09b8d4" if x % 4 else BACKGROUND
-    return pixel_text(rows)
+def capybara(max_width: int = 34, max_height: int = 10) -> Text:
+    """Ajusta a arte ANSI fornecida à área do cabeçalho, preservando suas cores."""
+    source = Text.from_ansi(MASCOT_ANSI.read_text(encoding="utf-8").rstrip("\n"))
+    lines = source.split("\n")
+    width = max(line.cell_len for line in lines)
+    height = len(lines)
+    scale = min(1.0, max_width / width, max_height / height)
+    if scale == 1.0:
+        return source
+    target_width = max(1, min(max_width, round(width * scale)))
+    target_height = max(1, min(max_height, round(height * scale)))
+    console = Console()
+    fitted = Text()
+    # A arte original usa somente caracteres de uma célula. Amostragem central
+    # mantém o enquadramento completo e os estilos RGB/inversos, sem cortes.
+    for y in range(target_height):
+        if y:
+            fitted.append("\n")
+        line = lines[min(height - 1, int((y + 0.5) * height / target_height))]
+        for x in range(target_width):
+            offset = min(width - 1, int((x + 0.5) * width / target_width))
+            character = line.plain[offset] if offset < len(line.plain) else " "
+            fitted.append(character, style=line.get_style_at_offset(console, offset))
+    return fitted

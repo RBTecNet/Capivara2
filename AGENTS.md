@@ -13,7 +13,8 @@
   Não copiar métricas fictícias da referência visual; indicar "não medido"
   quando uma informação ainda não for coletada.
 - O mascote principal é o PNG original fornecido pelo usuário, sem redesenhar
-  nem alterar o arquivo. Usar a capivara em blocos como fallback automático
+  nem alterar o arquivo. Usar o ANSI fornecido `build-busto-40x13.ans`, com
+  ajuste proporcional à área disponível, como fallback automático
   quando o terminal não oferecer suporte a imagens nativas.
 - Manter o repositório somente local. Não adicionar remotos nem publicar ou
   enviar commits até que o usuário autorize explicitamente.
