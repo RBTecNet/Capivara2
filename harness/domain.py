@@ -21,12 +21,53 @@ class AgentSelection:
     effort: str
 
 
+@dataclass(frozen=True)
+class MCPProject:
+    slug: str
+    name: str
+
+
+@dataclass(frozen=True)
+class MCPContent:
+    uri: str
+    mime_type: str
+    text: str | None = None
+    blob: str | None = None
+
+
+@dataclass(frozen=True)
+class MCPDocument:
+    uri: str
+    name: str
+    kind: str
+    attachment: bool
+    contents: tuple[MCPContent, ...]
+
+
+@dataclass(frozen=True)
+class MCPContext:
+    instance_id: str
+    instance_name: str
+    endpoint: str
+    project: MCPProject
+    prompt: str
+    documents: tuple[MCPDocument, ...]
+
+    def count(self, kind: str) -> int:
+        return sum(document.kind == kind and not document.attachment for document in self.documents)
+
+    @property
+    def attachments(self) -> int:
+        return sum(document.attachment for document in self.documents)
+
+
 @dataclass
 class WizardState:
     project_dir: Path
     prompt_source: str = "manual"
     prompt: str = ""
     prompt_file: Path | None = None
+    mcp_context: MCPContext | None = None
     writer: AgentSelection | None = None
     reviewer: AgentSelection | None = None
     reuse_reviewer: bool = True

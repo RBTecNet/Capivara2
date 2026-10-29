@@ -10,5 +10,10 @@
 - Informar ao usuário como testar e o identificador do commit da rodada.
 - Manter o repositório somente local. Não adicionar remotos nem publicar ou
   enviar commits até que o usuário autorize explicitamente.
-- Desenvolver uma etapa por vez. Nesta etapa, o wizard coleta a configuração;
-  a execução do `init`, `plan`, `build` e a integração MCP continuam fora do escopo.
+- Desenvolver uma etapa por vez. O wizard coleta a configuração e pode importar
+  prompt, skills, hooks e memórias de instâncias MCP cadastradas. A execução do
+  `init`, `plan` e `build` continua fora do escopo.
+- Não fixar endpoints ou tenants MCP no código. Preservar o isolamento entre
+  instâncias e nunca incluir chaves de autenticação em commits ou mensagens.
+- O projeto doc-center é fonte de consulta. O usuário determinou preservar suas
+  listagens e seu contrato atuais, sem alterações naquele projeto.

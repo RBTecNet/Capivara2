@@ -181,7 +181,7 @@ class WizardTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(menu.get_option("plan").disabled)
             self.assertTrue(menu.get_option("build").disabled)
             await pilot.press("enter")
-            self.assertTrue(app.screen.query_one(OptionList).get_option("mcp").disabled)
+            self.assertFalse(app.screen.query_one(OptionList).get_option("mcp").disabled)
             await pilot.press("enter", "ctrl+d")
             self.assertIsInstance(app.screen, ManualPromptStep)
             self.assertIn("Escreva o prompt", str(app.screen.query_one("#error", Static).render()))

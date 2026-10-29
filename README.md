@@ -1,6 +1,6 @@
 # Capivara2 · wizard de inicialização
 
-Primeira etapa do harness: uma TUI em tela cheia, feita em Python com
+Harness com wizard em tela cheia, feito em Python com
 [Textual](https://textual.textualize.io/). O wizard coleta a configuração do
 `init` e termina na confirmação. A função `init` ainda não está implementada.
 
@@ -35,9 +35,9 @@ permanece sem remoto até autorização do usuário.
 
 1. Conferir ou editar a pasta do projeto; Enter confirma.
 2. Escolher a função `init`. `plan` e `build` aparecem desabilitados nesta etapa.
-3. Escolher entre prompt manual e arquivo. A opção MCP/doc-center aparece
-   desabilitada, reservada para a segunda parte.
-4. Digitar o prompt com múltiplas linhas ou informar um arquivo UTF-8.
+3. Escolher entre prompt manual, arquivo e base MCP.
+4. Digitar o prompt com múltiplas linhas, informar um arquivo UTF-8 ou selecionar
+   a instância MCP e o projeto remoto.
 5. Selecionar IA escritora, modelo e effort.
 6. Reutilizar a configuração do escritor como revisor ou selecionar outra IA,
    modelo e effort.
@@ -88,7 +88,63 @@ Para usar outro arquivo de configuração:
 capivara2 --config /caminho/harness.toml
 ```
 
-A configuração e a listagem de MCPs serão implementadas na segunda parte.
+## Base MCP
+
+Em **Base MCP**, a TUI apresenta as instâncias cadastradas pelo nome do recurso
+e a opção **Adicionar MCP**. Sem instâncias registradas, aparece somente a opção
+de adicionar. Cada cadastro é independente: duas instâncias podem usar o mesmo
+endereço e chaves de tenants diferentes.
+
+O formulário solicita três campos:
+
+- **Nome do recurso:** nome que identifica a instância na lista.
+- **Endereço do MCP:** URL completa, incluindo protocolo, porta e caminho.
+  O endpoint informado para o doc-center atual é
+  `http://doc-center.rbtecnologia.net.br:7777/mcp`; esse endereço não é fixado
+  pelo código.
+- **Chave API de autenticação:** token Bearer, digitado em campo oculto.
+  Também aceita `env:NOME_DA_VARIAVEL` ou `@/caminho/arquivo-da-chave`.
+  Referências de arquivo relativas partem da pasta em que o Capivara2 foi aberto
+  e são salvas como caminhos absolutos.
+
+Enter avança entre os campos. No terceiro campo, Enter valida e salva; o botão
+**Validar e salvar** e o atalho **Ctrl+S** fazem a mesma operação. O cadastro só
+é gravado após inicializar a conexão MCP e consultar as listagens autenticadas.
+Se houver falha, os campos permanecem disponíveis para correção e nova tentativa.
+Uma instância válida sem projetos também pode ser cadastrada.
+
+As instâncias ficam em `~/.config/capivara2/mcps.json`, respeitando
+`XDG_CONFIG_HOME`. O arquivo é gravado de forma atômica com permissão `0600`;
+uma pasta de configuração nova é criada com `0700`. Chaves digitadas diretamente
+são guardadas nesse arquivo local. Para manter o segredo fora dele, use uma
+referência de ambiente ou de arquivo. Essa configuração não faz parte do Git.
+
+É possível escolher outro arquivo com `CAPIVARA2_MCP_CONFIG` ou com a flag,
+que tem precedência:
+
+```bash
+capivara2 --mcp-config /caminho/privado/mcps.json
+```
+
+Ao selecionar uma instância, a TUI consulta os projetos expostos por
+`resources/list` e `prompts/list`, seguindo a paginação quando houver. O contrato
+atual do doc-center foi preservado: projetos sem recursos ou prompts publicados
+não aparecem. As permissões da chave determinam o tenant e os projetos visíveis.
+O menu permite atualizar a listagem e alterar os dados de uma conexão existente.
+
+Ao escolher o projeto, o Capivara2 carrega o pedido completo, os documentos
+selecionados para aquele projeto e seus arquivos de apoio, incluindo conteúdo
+binário. Skills, hooks e memórias permanecem separados no contexto da sessão.
+O acervo geral que o projeto não selecionou e o histórico de conversas não são
+importados. Um prompt vazio ou uma falha ao ler qualquer recurso interrompe o
+avanço, permitindo corrigir ou tentar novamente. Após carregar tudo, o fluxo
+segue para a escolha do escritor e do revisor.
+
+A integração usa o [SDK oficial MCP para Python](https://github.com/modelcontextprotocol/python-sdk)
+com transporte HTTP, incluindo respostas JSON e SSE. O transporte e o cadastro
+de instâncias são separados do adaptador do contrato documental do doc-center.
+Os hooks são carregados como conteúdo; sua execução e a função `init` continuam
+para uma próxima etapa.
 
 ## Verificação
 
@@ -99,3 +155,6 @@ A configuração e a listagem de MCPs serão implementadas na segunda parte.
 Os testes percorrem a TUI por teclado, verificando prompt com múltiplas linhas,
 Ctrl+D, arquivos, edição da pasta, retorno entre telas, os quatro provedores,
 revisor compartilhado ou independente e a confirmação sem execução do `init`.
+Também verificam cadastro e edição de MCPs, persistência e permissões do arquivo,
+falhas de autenticação, isolamento entre tenants no mesmo endereço, paginação,
+respostas SSE, arquivos binários e importação completa sem material não selecionado.

@@ -1,76 +1,19 @@
-"""Wizard em tela cheia. Toda a configuração permanece em memória."""
+"""Wizard em tela cheia; configuração do init mantida em memória."""
 
 from pathlib import Path
-from typing import cast
 
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, Input, OptionList, Static, TextArea
+from textual.widgets import Button, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .catalog import Catalog
 from .domain import AgentSelection, Model, PROVIDERS, WizardState, read_prompt_file, resolve_project
-
-
-class Step(Screen):
-    BINDINGS = [Binding("escape", "back", "Voltar", priority=True)]
-
-    def __init__(self, title: str, hint: str, section: int) -> None:
-        super().__init__()
-        self.heading = title
-        self.hint = hint
-        self.section = section
-
-    @property
-    def wizard(self) -> "HarnessApp":
-        return cast("HarnessApp", self.app)
-
-    def fields(self) -> ComposeResult:
-        yield Static("")
-
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=False)
-        with VerticalScroll(id="viewport"):
-            with Vertical(id="panel"):
-                breadcrumb = Text()
-                for index, label in enumerate(("Projeto", "Função", "Prompt", "Escritor", "Revisor", "Confirmar")):
-                    if index:
-                        breadcrumb.append("  ›  ", style="dim")
-                    breadcrumb.append(label, style="bold cyan" if index == self.section else "dim")
-                yield Static(breadcrumb, id="steps")
-                yield Static(self.heading, id="heading", markup=False)
-                yield Static(self.hint, id="hint", markup=False)
-                yield from self.fields()
-                yield Static("", id="error", markup=False)
-                with Horizontal(id="actions"):
-                    yield Button("Voltar · Esc", id="back", disabled=self.section == 0, compact=True)
-        yield Footer()
-
-    def on_mount(self) -> None:
-        self.focus_field()
-
-    def on_screen_resume(self) -> None:
-        self.focus_field()
-
-    def focus_field(self) -> None:
-        fields = self.query("Input, OptionList, TextArea")
-        if fields:
-            fields.first().focus()
-
-    def error(self, message: str) -> None:
-        self.query_one("#error", Static).update(message)
-
-    def action_back(self) -> None:
-        if len(self.app.screen_stack) > 2:
-            self.app.pop_screen()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "back":
-            self.action_back()
+from .mcp_client import MCPService
+from .mcp_registry import MCPRegistry
+from .ui import Step
 
 
 class ProjectStep(Step):
@@ -147,6 +90,8 @@ class ManualPromptStep(Step):
             return
         self.wizard.state.prompt = text
         self.wizard.state.prompt_file = None
+        self.wizard.state.prompt_source = "manual"
+        self.wizard.state.mcp_context = None
         self.wizard.show_providers("writer")
 
 
@@ -167,6 +112,8 @@ class FilePromptStep(Step):
             return
         self.wizard.state.prompt_file = path
         self.wizard.state.prompt = text
+        self.wizard.state.prompt_source = "file"
+        self.wizard.state.mcp_context = None
         self.wizard.show_providers("writer")
 
 
@@ -178,7 +125,15 @@ class ConfirmStep(Step):
         state = self.wizard.state
         yield Static(f"Projeto: {state.project_dir}", classes="summary", markup=False)
         source = f"Arquivo · {state.prompt_file}" if state.prompt_source == "file" else "Escrito manualmente"
+        if state.prompt_source == "mcp" and state.mcp_context:
+            context = state.mcp_context
+            source = f"MCP · {context.instance_name} · {context.project.name} ({context.project.slug})"
         yield Static(f"Prompt: {source}", classes="summary", markup=False)
+        if state.mcp_context:
+            context = state.mcp_context
+            yield Static(f"Material: {context.count('skill')} skills · {context.count('hook')} hooks · "
+                         f"{context.count('memoria')} memórias · {context.attachments} arquivos de apoio",
+                         classes="summary", markup=False)
         for role, agent in (("Escritor", state.writer), ("Revisor", state.reviewer)):
             if agent:
                 yield Static(f"{role}: {PROVIDERS[agent.provider]}  /  {agent.model}  /  {agent.effort}",
@@ -203,7 +158,7 @@ class DoneStep(Step):
         super().__init__(title, hint, 5)
 
     def fields(self) -> ComposeResult:
-        yield Static("A configuração ficou somente nesta sessão. Nenhum agente foi iniciado e nenhum arquivo de projeto foi gerado.",
+        yield Static("Os dados deste init ficaram somente nesta sessão. Nenhum agente foi iniciado e nenhum arquivo de projeto foi gerado.",
                      classes="context")
         yield Button("Fechar", variant="primary", id="close")
 
@@ -246,17 +201,25 @@ class HarnessApp(App[WizardState]):
     #preview { height: 5; border: round #345867; margin: 1 0; }
     .context, .summary { height: auto; color: #b4c4cf; }
     .context { margin-bottom: 1; }
-    #error { color: #ff9b9b; height: auto; margin-top: 1; }
-    #error:empty { display: none; }
+    #error { color: #ff9b9b; height: auto; margin-top: 1; display: none; }
     #actions { height: 1; margin-top: 1; }
+    #mcp-status { height: auto; color: #a6e3cc; margin: 1 0; }
+    .mcp-field { border: none; height: 1; padding: 0 1; }
+    .mcp-field:focus { border: none; background: #244d50; }
+    .field-label { height: auto; color: #b4c4cf; }
+    #mcp-save { margin-top: 1; }
     Button { min-width: 16; }
     """
 
-    def __init__(self, *, launch_dir: Path | None = None, catalog: Catalog | None = None) -> None:
+    def __init__(self, *, launch_dir: Path | None = None, catalog: Catalog | None = None,
+                 mcp_registry: MCPRegistry | None = None, mcp_service: MCPService | None = None) -> None:
         super().__init__()
         self.launch_dir = (launch_dir or Path.cwd()).resolve()
         self.state = WizardState(project_dir=self.launch_dir)
         self.catalog = catalog or Catalog.load()
+        self.mcp_registry = mcp_registry or MCPRegistry()
+        self.mcp_service = mcp_service or MCPService()
+        self.last_mcp_id: str | None = None
 
     def on_mount(self) -> None:
         self.push_screen(ProjectStep(self.launch_dir))
@@ -269,7 +232,7 @@ class HarnessApp(App[WizardState]):
         self.push_screen(ChoiceStep("De onde vem o prompt do projeto?", "Escolha a origem do prompt.", 2, "source", [
             ("manual", "1. Escrever manualmente", False),
             ("file", "2. Ler a partir de um arquivo", False),
-            ("mcp", "3. Base MCP · doc-center · segunda parte", True)], selected=self.state.prompt_source))
+            ("mcp", "3. Base MCP", False)], selected=self.state.prompt_source))
 
     def show_providers(self, role: str) -> None:
         label = "escritor" if role == "writer" else "revisor"
@@ -281,6 +244,10 @@ class HarnessApp(App[WizardState]):
         if screen.kind == "function":
             self.show_sources()
         elif screen.kind == "source":
+            if key == "mcp":
+                from .mcp_ui import MCPInstancesStep
+                self.push_screen(MCPInstancesStep())
+                return
             self.state.prompt_source = key
             self.push_screen(ManualPromptStep(self.state.prompt if self.state.prompt_file is None else "")
                              if key == "manual" else FilePromptStep(self.state.prompt_file))
