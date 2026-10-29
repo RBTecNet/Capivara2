@@ -22,6 +22,10 @@
 - Entrevistas são de múltipla escolha com exatamente uma opção livre e uma
   recomendação justificada pela finalidade do pedido. Perguntar stack e
   ferramentas do projeto quando indefinidas; inferir ferramentas internas.
+- Suítes/frameworks de testes e automação de navegador são decisões internas do
+  harness, inclusive quando o pedido exige testes. Não entrevistar essas escolhas;
+  registrar a inferência e incorporá-la à fase 0. Erros de citação do revisor não
+  podem gerar nova entrevista sobre decisões já tomadas.
 - O prompt final sempre contém fase 0 de stack e ferramentas e fases posteriores
   de implementação. Só marcar init concluído após aprovação do prompt final.
 - Não fixar endpoints ou tenants MCP no código. Preservar o isolamento entre

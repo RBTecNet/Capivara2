@@ -55,7 +55,7 @@ class ScriptedAgents:
                         {"id": "server", "label": "Servidor compartilhado", "description": "Infraestrutura para vários usuários."}],
                     "recommended_option_id": "local", "recommendation_reason": "O uso pessoal favorece simplicidade e dados locais.",
                     "goal_reference": self.goal})
-            return json.dumps({"questions": questions})
+            return json.dumps({"questions": questions, "inferred_decisions": []})
         if task == "write":
             return json.dumps(self.documents.pop(0) if self.documents else final_document())
         if task == "final_review":

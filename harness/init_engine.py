@@ -12,6 +12,7 @@ from .artifacts import ArtifactStore, InitError, digest
 from .domain import WizardState
 from .init_instructions import REVIEWER, WRITER
 from .init_models import Answer, FinalPrompt, Gap, Interview, Question, Review
+from .interview_policy import internal_question_reason
 
 
 def normalized(text: str) -> str:
@@ -30,6 +31,7 @@ class InitEngine:
         self.call_id = 0
         self.round = 0
         self.interviews = []
+        self.inferred_decisions = []
 
     def announce(self, stage: str, message: str) -> None:
         self.store.event(stage, message, round=self.round)
@@ -80,12 +82,35 @@ class InitEngine:
                     gaps.append(Gap(id=f"required_{topic}", topic=topic, description=description))
         return review.model_copy(update={"gaps": gaps, "approved": review.approved and not gaps})
 
+    def check_technology_evidence(self, review: Review, text: str) -> None:
+        evidence = review.technology
+        for topic, specified, quote in (("stack", evidence.stack_specified, evidence.stack_quote),
+                                        ("tools", evidence.tools_specified, evidence.tools_quote)):
+            if specified and (not quote or normalized(quote) not in normalized(text)):
+                raise ValueError(f"A citação literal de {topic} não foi encontrada no documento. "
+                                 "Corrija a evidência na revisão; não transforme um erro de citação em nova entrevista. "
+                                 "Ferramentas de QA e testes são inferidas pelo harness, não lacunas de ferramentas do produto.")
+
+    def final_technology_corrections(self, review: Review) -> Review:
+        missing = []
+        if not review.technology.stack_specified:
+            missing.append("stack")
+        if not review.technology.tools_specified:
+            missing.append("ferramentas do produto")
+        if not missing:
+            return review
+        correction = (f"Explicite {' e '.join(missing)} na fase 0 com base no pedido e nas decisões já recebidas. "
+                      "Corrija a documentação sem repetir perguntas já respondidas. Infira as ferramentas internas de testes e QA.")
+        return review.model_copy(update={"approved": False, "deviations": [*review.deviations, correction]})
+
     async def conduct_interview(self, review: Review, source_text: str) -> None:
         gap_ids = {gap.id for gap in review.gaps}
 
         def complete_interview(value: Interview):
             covered = set()
             for question in value.questions:
+                if reason := internal_question_reason(question):
+                    raise ValueError(reason)
                 if not set(question.gap_ids).issubset(gap_ids):
                     raise ValueError("A entrevista citou lacunas que não estão nesta revisão.")
                 covered.update(question.gap_ids)
@@ -94,13 +119,24 @@ class InitEngine:
                 topics = {gap.topic for gap in review.gaps if gap.id in question.gap_ids}
                 if question.topic not in topics:
                     raise ValueError("O tópico da pergunta precisa corresponder às lacunas cobertas.")
+            for decision in value.inferred_decisions:
+                if not set(decision.gap_ids).issubset(gap_ids):
+                    raise ValueError("A decisão inferida citou lacunas que não estão nesta revisão.")
+                covered.update(decision.gap_ids)
             if covered != gap_ids:
-                raise ValueError(f"Entreviste todas as lacunas abertas; faltam: {sorted(gap_ids - covered)}")
+                raise ValueError(f"Resolva as lacunas com perguntas do produto ou decisões internas inferidas; faltam: {sorted(gap_ids - covered)}")
 
         self.announce("preparing_interview", f"Rodada {self.round}: escritor preparando a entrevista sobre {len(review.gaps)} lacuna(s).")
-        interview = await self.call("writer", "interview", {"review": review.model_dump(), "previous_interviews": self.interviews},
+        interview = await self.call("writer", "interview", {"review": review.model_dump(), "previous_interviews": self.interviews,
+                                    "previous_inferred_decisions": self.inferred_decisions},
                                     Interview, complete_interview)
-        record = {"round": self.round, "questions": interview.model_dump()["questions"], "answers": []}
+        decisions = [decision.model_dump() for decision in interview.inferred_decisions]
+        record = {"round": self.round, "questions": interview.model_dump()["questions"], "answers": [],
+                  "inferred_decisions": decisions}
+        if decisions:
+            self.inferred_decisions.append({"round": self.round, "decisions": decisions})
+            self.store.json("control/inferred-decisions.json", self.inferred_decisions)
+            self.announce("inferring_internal_tools", f"Escritor inferiu {len(decisions)} decisão(ões) interna(s), sem entrevistar o usuário.")
         filename = f"enterviews/round-{self.round:04d}.json"
         self.store.json(filename, record)
         for index, question in enumerate(interview.questions, 1):
@@ -126,7 +162,8 @@ class InitEngine:
             source = self.store.begin(self.state)
             source_text = self.state.prompt + "\n" + "\n".join(document.get("text") or "" for document in source["documents"])
             self.announce("reviewing_initial", "Revisor analisando o pedido original e a documentação recebida.")
-            review = await self.call("reviewer", "initial_review", {"source": source}, Review)
+            review = await self.call("reviewer", "initial_review", {"source": source}, Review,
+                                     lambda value: self.check_technology_evidence(value, source_text))
             review = self.technology_gaps(review, source_text)
             baseline = list(review.requirements)
             self.store.json("control/baseline-requirements.json", baseline)
@@ -138,20 +175,23 @@ class InitEngine:
             while True:
                 self.round += 1
                 self.store.json("control/checkpoint.json", {"round": self.round, "review": review.model_dump(),
-                                                            "interviews": self.interviews})
+                                                            "interviews": self.interviews, "inferred_decisions": self.inferred_decisions})
                 if review.gaps:
                     await self.conduct_interview(review, source_text)
                 self.announce("writing", f"Rodada {self.round}: escritor elaborando o prompt por fases e corrigindo os apontamentos.")
                 candidate = await self.call("writer", "write", {"review": review.model_dump(),
                     "baseline_requirements": baseline, "interviews": self.interviews,
+                    "inferred_decisions": self.inferred_decisions,
                     "previous_prompt": previous}, FinalPrompt)
                 markdown = candidate.render()
                 self.store.write(f"prompts/round-{self.round:04d}.md", markdown)
                 self.store.json(f"prompts/round-{self.round:04d}.json", candidate.model_dump())
                 self.announce("reviewing_final", f"Rodada {self.round}: revisor retomando seu contexto e verificando fidelidade, lacunas, fases e viabilidade.")
                 review = await self.call("reviewer", "final_review", {"candidate": markdown,
-                    "baseline_requirements": baseline, "interviews": self.interviews}, Review)
-                review = self.technology_gaps(review, markdown)
+                    "baseline_requirements": baseline, "interviews": self.interviews,
+                    "inferred_decisions": self.inferred_decisions}, Review,
+                    lambda value: self.check_technology_evidence(value, markdown))
+                review = self.final_technology_corrections(review)
                 report = {"round": self.round, "prompt_sha256": digest(markdown), "review": review.model_dump()}
                 self.store.json(f"control/review-{self.round:04d}.json", report)
                 if review.approved:

@@ -69,7 +69,24 @@ uma linha e Ctrl+D confirma. Esc retorna às opções; Esc nas opções interrom
 
 Stack e ferramentas do projeto são obrigatoriamente levantadas quando não estão
 explícitas no material original. Ferramentas exclusivamente internas do harness
-são inferidas pelos agentes. O init não verifica instalação de ferramentas, não
+são inferidas pelos agentes. Isso inclui suítes, frameworks, runners de testes e
+automação de navegador, mesmo quando o pedido exige testes automatizados e fluxos
+reais no navegador. Essas exigências são preservadas como critérios de qualidade;
+escolher suas ferramentas não vira uma pergunta para o usuário.
+
+Antes de exibir a entrevista, o harness devolve perguntas de escolha de ferramentas
+de QA ao escritor para convertê-las em decisões internas. As inferências ficam em
+`.harness/control/inferred-decisions.json` e são entregues ao escritor e ao revisor
+para constar na fase 0, separadas das respostas do usuário. Decisões funcionais do
+produto continuam sendo entrevistadas normalmente.
+
+Uma citação de stack/ferramentas que não corresponde ao texto é devolvida ao revisor
+para corrigir a evidência, sem reabrir automaticamente uma entrevista. Se faltar
+clareza na fase 0, o escritor corrige a documentação usando as decisões existentes.
+Respostas mais recentes que alteram a mesma decisão prevalecem sobre as antigas,
+mantendo o histórico para auditoria.
+
+O init não verifica instalação de ferramentas, não
 inspeciona o ambiente, não executa testes da aplicação e não gera seu código.
 Os CLIs são chamados para produzir respostas documentais, com ferramentas
 desabilitadas ou negadas pelos adaptadores.

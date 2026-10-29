@@ -74,11 +74,21 @@ class Question(DocumentModel):
         return self
 
 
+class InferredDecision(DocumentModel):
+    gap_ids: list[str] = Field(min_length=1)
+    scope: Literal["harness"]
+    decision: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
 class Interview(DocumentModel):
-    questions: list[Question] = Field(min_length=1)
+    questions: list[Question]
+    inferred_decisions: list[InferredDecision]
 
     @model_validator(mode="after")
     def unique_questions(self):
+        if not self.questions and not self.inferred_decisions:
+            raise ValueError("Resolva as lacunas com perguntas do produto ou decisões internas inferidas.")
         if len({question.id for question in self.questions}) != len(self.questions):
             raise ValueError("Perguntas precisam ter identificadores únicos.")
         return self
