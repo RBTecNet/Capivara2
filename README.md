@@ -1,8 +1,8 @@
 # Capivara2 · wizard de inicialização
 
 Harness com wizard em tela cheia, feito em Python com
-[Textual](https://textual.textualize.io/). O wizard coleta a configuração do
-`init` e termina na confirmação. A função `init` ainda não está implementada.
+[Textual](https://textual.textualize.io/). O `init` recebe o pedido, entrevista o
+usuário e produz um prompt profissional por fases, aprovado por um revisor.
 
 ## Executar
 
@@ -34,7 +34,8 @@ permanece sem remoto até autorização do usuário.
 ## Fluxo
 
 1. Conferir ou editar a pasta do projeto; Enter confirma.
-2. Escolher a função `init`. `plan` e `build` aparecem desabilitados nesta etapa.
+2. Escolher a função `init`. Depois de um init concluído, `plan` começa selecionado;
+   seu menu informa que a implementação será feita na próxima etapa.
 3. Escolher entre prompt manual, arquivo e base MCP.
 4. Digitar o prompt com múltiplas linhas, informar um arquivo UTF-8 ou selecionar
    a instância MCP e o projeto remoto.
@@ -42,6 +43,7 @@ permanece sem remoto até autorização do usuário.
 6. Reutilizar a configuração do escritor como revisor ou selecionar outra IA,
    modelo e effort.
 7. Conferir o resumo e responder “Executar agora?”.
+8. Responder às entrevistas e acompanhar o ciclo de revisão até a aprovação.
 
 No prompt manual, **Enter insere uma linha** e **Ctrl+D confirma**. Menus usam
 as setas e Enter; Tab alterna entre os controles, Esc volta e Ctrl+Q sai.
@@ -50,17 +52,72 @@ Os controles também aceitam mouse. O rascunho do prompt permanece ao voltar.
 Arquivos de prompt podem usar caminhos absolutos, `~` ou caminhos relativos à
 pasta do projeto selecionada. O conteúdo é lido e validado antes de avançar.
 
-Ao responder “Sim” na confirmação, a TUI registra a intenção de executar e
-mostra que o `init` será implementado depois. “Não” encerra a configuração sem
-solicitar execução. Os dados ficam em memória; o wizard não inicia agentes,
-não grava o prompt e não gera arquivos no projeto escolhido.
+“Sim” inicia o init documental. “Não” encerra o wizard sem executar o módulo.
+
+## Init documental
+
+O revisor analisa o prompt original e toda a documentação textual recebida,
+preserva seus requisitos e aponta lacunas. O escritor transforma essas lacunas
+em entrevistas e depois redige o prompt completo. O contexto de cada papel é
+salvo separadamente e recuperado a cada chamada, inclusive quando escritor e
+revisor usam o mesmo modelo.
+
+Cada pergunta tem opções concretas, uma recomendação justificada pela finalidade
+do pedido e exatamente uma opção **Outra opção — descrever livremente**. A escolha
+recomendada começa destacada, mas exige confirmação. No texto livre, Enter cria
+uma linha e Ctrl+D confirma. Esc retorna às opções; Esc nas opções interrompe o init.
+
+Stack e ferramentas do projeto são obrigatoriamente levantadas quando não estão
+explícitas no material original. Ferramentas exclusivamente internas do harness
+são inferidas pelos agentes. O init não verifica instalação de ferramentas, não
+inspeciona o ambiente, não executa testes da aplicação e não gera seu código.
+Os CLIs são chamados para produzir respostas documentais, com ferramentas
+desabilitadas ou negadas pelos adaptadores.
+
+O escritor devolve requisitos, decisões, stack, ferramentas e fases com atividades,
+entregáveis, dependências e critérios de aceite. O harness gera a **fase 0 — Stack
+e ferramentas**, seguida por fases consecutivas de implementação. O revisor
+confere fidelidade ao pedido original e às respostas, ausência de lacunas, fases
+coerentes e viabilidade documental. Novas lacunas geram outra entrevista; desvios
+e impossibilidades explicitamente justificados retornam para correção automática.
+Esse ciclo não tem limite fixo de rodadas nem aprovação por esgotamento de tentativas.
+
+Somente uma aprovação explícita e consistente do revisor cria `prompts/final.md`
+e marca o init como concluído. Contratos JSON inválidos são devolvidos ao agente
+com o motivo para correção, sem limite fixo. Uma falha do CLI deixa o init incompleto,
+com logs para diagnóstico. A tela permite tentar novamente. Esc interrompe o
+processo; Ctrl+Q encerra a TUI e cancela a execução em andamento.
+
+Todos os artefatos ficam na pasta `.harness` do projeto selecionado:
+
+```text
+.harness/
+  status.json                    # status de init, plan e build
+  owner.json                     # identificação da pasta gerenciada
+  prompts/initial.md             # pedido original, preservado
+  prompts/round-0001.md           # candidatos de cada rodada
+  prompts/final.md               # somente após aprovação
+  prompts/final.json             # representação estruturada para o plan
+  enterviews/round-0001.json      # perguntas, recomendações e respostas
+  context/                       # documentos recebidos e anexos preservados
+  control/reviewer-context.json  # contexto recuperável do revisor
+  control/writer-context.json    # contexto do escritor
+  control/approval.json          # revisão e hash do prompt aprovado
+  log/                           # progresso, entradas, saídas e erros dos CLIs
+```
+
+Reexecutar o init substitui os artefatos anteriores dessa pasta gerenciada e
+reinicia os status de plan/build. Os arquivos da aplicação na raiz são preservados.
+Uma pasta `.harness` não reconhecida é preservada e gera uma mensagem, em vez de
+ser apagada. Ao reabrir um projeto cujo prompt final aprovado continua íntegro,
+`plan` é destacado como próximo módulo. `plan` e `build` ainda não executam trabalho.
 
 ## Modelos e efforts
 
-O catálogo fica em [harness/harness.toml](harness/harness.toml). Nesta primeira
-etapa, a TUI não consulta os CLIs nem verifica instalação, autenticação ou acesso
-a modelos. Codex, Claude, OpenCode e agy estão disponíveis para configurar os
-papéis de escritor e revisor.
+O catálogo fica em [harness/harness.toml](harness/harness.toml). A seleção não
+consulta os CLIs nem faz testes de disponibilidade. Codex, Claude, OpenCode e agy
+podem ser escolhidos para escritor e revisor. O CLI selecionado é iniciado
+diretamente ao executar o módulo; falhas de execução ou autenticação são registradas.
 
 Por padrão, Codex aproveita os modelos e efforts de
 `$CODEX_HOME/models_cache.json` ou `~/.codex/models_cache.json`, quando esse
@@ -87,6 +144,22 @@ Para usar outro arquivo de configuração:
 ```bash
 capivara2 --config /caminho/harness.toml
 ```
+
+Há adaptadores nativos para Codex, Claude e OpenCode V2. A validação real desta
+etapa usa Codex; os demais exigem suas próprias configurações e autenticações.
+O comando não interativo específico do agy precisa ser configurado. Também é
+possível substituir qualquer adaptador com um comando explícito, sem shell:
+
+```toml
+[agents.agy]
+command = ["/caminho/para/seu-adaptador-agy"]
+```
+
+Esse adaptador recebe o pedido documental completo em stdin e precisa devolver
+somente o JSON correspondente em stdout, sem executar ferramentas ou criar código.
+As variáveis `CAPIVARA2_ROLE`, `CAPIVARA2_MODEL`, `CAPIVARA2_EFFORT` e
+`CAPIVARA2_SCHEMA` informam papel, modelo, effort e caminho do schema. O contexto
+anterior já acompanha a entrada; o adaptador não precisa implementar sessões.
 
 ## Base MCP
 
@@ -143,8 +216,10 @@ segue para a escolha do escritor e do revisor.
 A integração usa o [SDK oficial MCP para Python](https://github.com/modelcontextprotocol/python-sdk)
 com transporte HTTP, incluindo respostas JSON e SSE. O transporte e o cadastro
 de instâncias são separados do adaptador do contrato documental do doc-center.
-Os hooks são carregados como conteúdo; sua execução e a função `init` continuam
-para uma próxima etapa.
+Os hooks são carregados como conteúdo documental; o init não os executa.
+Ao iniciar o módulo, textos e anexos são preservados em `.harness/context`, sem
+copiar a chave API para os artefatos do projeto. Anexos binários são guardados
+como referências, sem presumir um conteúdo que o agente não observou.
 
 ## Verificação
 
@@ -154,7 +229,11 @@ para uma próxima etapa.
 
 Os testes percorrem a TUI por teclado, verificando prompt com múltiplas linhas,
 Ctrl+D, arquivos, edição da pasta, retorno entre telas, os quatro provedores,
-revisor compartilhado ou independente e a confirmação sem execução do `init`.
+revisor compartilhado ou independente e a execução documental do `init`.
 Também verificam cadastro e edição de MCPs, persistência e permissões do arquivo,
 falhas de autenticação, isolamento entre tenants no mesmo endereço, paginação,
 respostas SSE, arquivos binários e importação completa sem material não selecionado.
+Os testes do init focam no documento: preservação do pedido original, fase 0 e
+fases executáveis, decisões obrigatórias sobre stack/ferramentas, lacunas resolvidas,
+devolução de desvios/inviabilidade e aprovação explícita. Não testam a aplicação
+solicitada nem verificam ferramentas do ambiente.

@@ -2,7 +2,7 @@
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import tomllib
 
@@ -17,6 +17,7 @@ class Catalog:
     path: Path
     models: dict[str, tuple[Model, ...]]
     sources: dict[str, str]
+    commands: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path = DEFAULT_CONFIG) -> "Catalog":
@@ -62,7 +63,16 @@ class Catalog:
                 if cached:
                     models[key] = cached
                     sources[key] = "Modelos e efforts do cache local do Codex"
-        return cls(path, models, sources)
+        commands = {}
+        agents = data.get("agents", {})
+        if not isinstance(agents, dict):
+            raise ValueError("agents deve ser uma tabela TOML.")
+        for provider, settings in agents.items():
+            command = settings.get("command") if isinstance(settings, dict) else None
+            if provider not in PROVIDERS or not isinstance(command, list) or not command or any(not isinstance(arg, str) or not arg for arg in command):
+                raise ValueError("Cada agents.<provedor>.command deve conter o programa e seus argumentos em uma lista de strings.")
+            commands[provider] = tuple(command)
+        return cls(path, models, sources, commands)
 
 
 def read_codex_cache() -> tuple[Model, ...]:

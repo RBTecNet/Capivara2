@@ -10,6 +10,8 @@ from textual.widgets import Button, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .catalog import Catalog
+from .agents import CLIAgents
+from .artifacts import InitError, suggested_module
 from .domain import AgentSelection, Model, PROVIDERS, WizardState, read_prompt_file, resolve_project
 from .mcp_client import MCPService
 from .mcp_registry import MCPRegistry
@@ -119,7 +121,11 @@ class FilePromptStep(Step):
 
 class ConfirmStep(Step):
     def __init__(self) -> None:
-        super().__init__("Executar agora?", "Confira a configuração. A implementação do init será feita na próxima etapa.", 5)
+        super().__init__("Executar agora?", "Confira a configuração para iniciar a revisão documental e as entrevistas.", 5)
+
+    def on_mount(self) -> None:
+        if suggested_module(self.wizard.state.project_dir) != "init":
+            self.query_one("#hint", Static).update("Executar o init novamente substitui os artefatos anteriores em .harness e reinicia o fluxo do projeto.")
 
     def fields(self) -> ComposeResult:
         state = self.wizard.state
@@ -147,13 +153,17 @@ class ConfirmStep(Step):
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()
         self.wizard.state.execute_requested = event.option.id == "yes"
-        self.wizard.push_screen(DoneStep(self.wizard.state.execute_requested))
+        if self.wizard.state.execute_requested:
+            from .init_ui import InitExecutionStep
+            self.wizard.push_screen(InitExecutionStep())
+        else:
+            self.wizard.push_screen(DoneStep(False))
 
 
 class DoneStep(Step):
     def __init__(self, requested: bool) -> None:
         title = "Wizard concluído" if requested else "Configuração concluída sem executar"
-        hint = ("Solicitação de execução recebida. O init ainda não foi implementado."
+        hint = ("Solicitação de execução recebida."
                 if requested else "Você escolheu não executar agora.")
         super().__init__(title, hint, 5)
 
@@ -208,15 +218,21 @@ class HarnessApp(App[WizardState]):
     .mcp-field:focus { border: none; background: #244d50; }
     .field-label { height: auto; color: #b4c4cf; }
     #mcp-save { margin-top: 1; }
+    #init-progress, #init-elapsed { height: auto; margin-bottom: 1; }
+    #init-log { height: 8; border: round #345867; margin-bottom: 1; }
+    #interview-free { height: 8; }
+    #final-prompt { height: 18; }
     Button { min-width: 16; }
     """
 
     def __init__(self, *, launch_dir: Path | None = None, catalog: Catalog | None = None,
-                 mcp_registry: MCPRegistry | None = None, mcp_service: MCPService | None = None) -> None:
+                 mcp_registry: MCPRegistry | None = None, mcp_service: MCPService | None = None,
+                 agents: CLIAgents | None = None) -> None:
         super().__init__()
         self.launch_dir = (launch_dir or Path.cwd()).resolve()
         self.state = WizardState(project_dir=self.launch_dir)
         self.catalog = catalog or Catalog.load()
+        self.agents = agents or CLIAgents(self.catalog.commands)
         self.mcp_registry = mcp_registry or MCPRegistry()
         self.mcp_service = mcp_service or MCPService()
         self.last_mcp_id: str | None = None
@@ -225,8 +241,14 @@ class HarnessApp(App[WizardState]):
         self.push_screen(ProjectStep(self.launch_dir))
 
     def show_functions(self) -> None:
+        try:
+            selected = suggested_module(self.state.project_dir)
+        except InitError as exc:
+            self.screen.error(str(exc))
+            return
         self.push_screen(ChoiceStep("Qual função deseja executar?", "Use ↑ e ↓ para escolher; Enter para confirmar.", 1, "function", [
-            ("init", "init", False), ("plan", "plan · próxima etapa", True), ("build", "build · próxima etapa", True)]))
+            ("init", "init", False), ("plan", "plan · próxima etapa", selected != "plan"),
+            ("build", "build · próxima etapa", selected != "build")], selected=selected))
 
     def show_sources(self) -> None:
         self.push_screen(ChoiceStep("De onde vem o prompt do projeto?", "Escolha a origem do prompt.", 2, "source", [
@@ -242,7 +264,11 @@ class HarnessApp(App[WizardState]):
 
     def choose(self, screen: ChoiceStep, key: str) -> None:
         if screen.kind == "function":
-            self.show_sources()
+            if key == "init":
+                self.show_sources()
+            else:
+                from .init_ui import PendingModuleStep
+                self.push_screen(PendingModuleStep(key))
         elif screen.kind == "source":
             if key == "mcp":
                 from .mcp_ui import MCPInstancesStep
@@ -288,3 +314,8 @@ class HarnessApp(App[WizardState]):
             else:
                 self.state.reviewer = None
                 self.show_providers("reviewer")
+
+    async def action_quit(self) -> None:
+        self.workers.cancel_all()
+        await self.workers.wait_for_complete()
+        self.exit(self.state)

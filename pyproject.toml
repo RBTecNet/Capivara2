@@ -7,7 +7,7 @@ name = "capivara-harness"
 version = "0.1.0"
 description = "Wizard TUI de inicialização do harness"
 requires-python = ">=3.11"
-dependencies = ["textual>=6,<7", "mcp>=1.30,<2", "httpx>=0.28,<1"]
+dependencies = ["textual>=6,<7", "mcp>=1.30,<2", "httpx>=0.28,<1", "pydantic>=2.12,<3"]
 
 [project.scripts]
 capivara2 = "harness.__main__:main"

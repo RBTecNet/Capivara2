@@ -10,9 +10,20 @@
 - Informar ao usuário como testar e o identificador do commit da rodada.
 - Manter o repositório somente local. Não adicionar remotos nem publicar ou
   enviar commits até que o usuário autorize explicitamente.
-- Desenvolver uma etapa por vez. O wizard coleta a configuração e pode importar
-  prompt, skills, hooks e memórias de instâncias MCP cadastradas. A execução do
-  `init`, `plan` e `build` continua fora do escopo.
+- Desenvolver uma etapa por vez. Implementar somente o `init` documental agora;
+  `plan` e `build` ficam para etapas posteriores.
+- Todo artefato e status de módulos fica em `.harness` no projeto selecionado:
+  logs, entrevistas (`enterviews`), prompts, contexto e controle. A aplicação
+  futura pertence à raiz do projeto; todo o estado do harness fica em `.harness`.
+- O init somente gera e valida documentação: nunca verificar ferramentas do
+  ambiente, executar testes da aplicação ou gerar código da aplicação.
+- O revisor preserva o pedido original, identifica lacunas e verifica viabilidade.
+  O escritor entrevista e redige. Repetir até aprovação explícita do revisor.
+- Entrevistas são de múltipla escolha com exatamente uma opção livre e uma
+  recomendação justificada pela finalidade do pedido. Perguntar stack e
+  ferramentas do projeto quando indefinidas; inferir ferramentas internas.
+- O prompt final sempre contém fase 0 de stack e ferramentas e fases posteriores
+  de implementação. Só marcar init concluído após aprovação do prompt final.
 - Não fixar endpoints ou tenants MCP no código. Preservar o isolamento entre
   instâncias e nunca incluir chaves de autenticação em commits ou mensagens.
 - O projeto doc-center é fonte de consulta. O usuário determinou preservar suas

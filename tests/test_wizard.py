@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 import tempfile
@@ -10,6 +11,8 @@ from harness.app import (ChoiceStep, ConfirmStep, DoneStep, FilePromptStep,
                          HarnessApp, ManualPromptStep, ProjectStep)
 from harness.catalog import Catalog, read_codex_cache
 from harness.domain import Model, PROVIDERS, read_prompt_file, resolve_project
+from harness.init_ui import InitExecutionStep, InterviewStep
+from init_fixture import ScriptedAgents
 
 
 def test_catalog() -> Catalog:
@@ -75,7 +78,7 @@ class WizardTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.temp.cleanup)
 
     def app(self, catalog=None):
-        return HarnessApp(launch_dir=self.root, catalog=catalog or test_catalog())
+        return HarnessApp(launch_dir=self.root, catalog=catalog or test_catalog(), agents=ScriptedAgents())
 
     async def manual_prompt(self, app, pilot):
         await pilot.press("enter", "enter", "enter")
@@ -100,14 +103,20 @@ class WizardTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.state.reviewer, app.state.writer)
                 self.assertEqual(app.state.prompt, "Projeto\nTUI")
                 await pilot.press("enter")
-                self.assertIsInstance(app.screen, DoneStep)
+                async with asyncio.timeout(10):
+                    while True:
+                        await pilot.pause()
+                        if isinstance(app.screen, InterviewStep):
+                            await pilot.press("enter")
+                        elif isinstance(app.screen, InitExecutionStep) and not app.screen.busy:
+                            break
+                self.assertIsInstance(app.screen, InitExecutionStep)
                 self.assertTrue(app.state.execute_requested)
-                self.assertIn("ainda não foi implementado", str(app.screen.query_one("#hint", Static).render()))
-                self.assertEqual(list(self.root.iterdir()), [])
+                self.assertTrue((self.root / ".harness/prompts/final.md").is_file())
+                self.assertEqual([path.name for path in self.root.iterdir()], [".harness"])
                 await pilot.click("#back")
                 self.assertIsInstance(app.screen, ConfirmStep)
-                self.assertFalse(app.state.execute_requested)
-                await pilot.press("enter")
+                await pilot.press("down", "enter")
                 self.assertIsInstance(app.screen, DoneStep)
                 await pilot.click("#close")
         self.assertIs(app.return_value, app.state)
