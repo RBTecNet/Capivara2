@@ -24,6 +24,9 @@ class CLIAgents:
         provider = selection.provider
         if provider in self.commands:
             return list(self.commands[provider]), "custom"
+        if env.get("CAPIVARA2_EXECUTION") == "build":
+            from .build_agents import build_command
+            return build_command(selection, schema, output, schema_file, Path(env["CAPIVARA2_WORKSPACE"]))
         if provider == "codex":
             command = ["codex", "--no-daemon", "exec", "--json", "--ephemeral", "--ignore-user-config",
                        "--ignore-rules", "--skip-git-repo-check", "--sandbox", "read-only",
@@ -66,17 +69,20 @@ class CLIAgents:
         raise AgentError(f"Configure agents.{provider}.command no catálogo para usar o CLI {PROVIDERS.get(provider, provider)} nos módulos documentais.")
 
     async def generate(self, selection: AgentSelection, role: str, prompt: str, schema: dict,
-                       store: ArtifactStore, call_id: int) -> str:
-        log_root = ".harness/plan" if store.root.name == "plan" else ".harness"
-        prefix = f"log/{role}-{call_id:04d}"
+                       store: ArtifactStore, call_id: int, *, cwd: Path | None = None, allow_tools: bool = False) -> str:
+        log_root = f".harness/{store.root.name}" if store.root.name in ("plan", "build") else ".harness"
+        prefix = (f"log/{store.run_id}-{role}-{call_id:04d}" if allow_tools
+                  else f"log/{role}-{call_id:04d}")
         store.write(prefix + ".input.txt", prompt)
         store.json(prefix + ".schema.json", schema)
         output = store.path(prefix + ".last.txt")
-        work = store.path("control/work")
+        work = cwd or store.path("control/work")
         work.mkdir(parents=True, mode=0o700, exist_ok=True)
         env = dict(os.environ, CAPIVARA2_ROLE=role, CAPIVARA2_MODEL=selection.model,
                    CAPIVARA2_EFFORT=selection.effort, CAPIVARA2_SCHEMA=str(store.path(prefix + ".schema.json")),
-                   CAPIVARA2_OUTPUT=str(output), NO_COLOR="1")
+                   CAPIVARA2_OUTPUT=str(output), NO_COLOR="1",
+                   CAPIVARA2_EXECUTION="build" if allow_tools else "document",
+                   CAPIVARA2_WORKSPACE=str(work))
         command, mode = self.command(selection, schema, output, store.path(prefix + ".schema.json"), store, env)
         try:
             process = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.PIPE,
@@ -109,11 +115,15 @@ class CLIAgents:
                     log.write(chunk)
                     log.flush()
 
+        payload = prompt
+        if mode == "agy":
+            payload = json.dumps({"event": "user", "message": {"content": prompt}}) + "\n"
+
         async def communicate():
             async with asyncio.TaskGroup() as group:
                 group.create_task(collect(process.stdout, prefix + ".stdout.log", stdout_parts))
                 group.create_task(collect(process.stderr, prefix + ".stderr.log", stderr_parts))
-                process.stdin.write(prompt.encode("utf-8"))
+                process.stdin.write(payload.encode("utf-8"))
                 try:
                     await process.stdin.drain()
                 except (BrokenPipeError, ConnectionResetError):
@@ -142,7 +152,7 @@ class CLIAgents:
                 except ValueError:
                     continue
                 item = event.get("item", {})
-                if item.get("type") in ("command_execution", "file_change", "mcp_tool_call", "web_search"):
+                if not allow_tools and item.get("type") in ("command_execution", "file_change", "mcp_tool_call", "web_search"):
                     raise AgentError("O agente tentou usar ferramentas durante a execução documental. A execução não foi aprovada.")
             if not output.is_file():
                 raise AgentError("O Codex não entregou uma resposta final. Consulte os logs da chamada.")
@@ -163,7 +173,7 @@ class CLIAgents:
                     event = json.loads(line)
                 except ValueError:
                     continue
-                if event.get("type") in ("tool_use", "tool_call"):
+                if not allow_tools and event.get("type") in ("tool_use", "tool_call"):
                     raise AgentError("O OpenCode tentou usar ferramentas durante a execução documental.")
                 part = event.get("part", {})
                 if event.get("type") == "text" and isinstance(part.get("text"), str):
@@ -171,4 +181,15 @@ class CLIAgents:
                 elif event.get("type") == "error":
                     raise AgentError("O OpenCode informou uma falha. Consulte os logs da chamada.")
             return "\n".join(parts) if parts else stdout
+        if mode == "agy":
+            result = None
+            for line in stdout.splitlines():
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if event.get("event") == "result": result = event.get("result", {})
+            if not result or result.get("status", "SUCCESS") != "SUCCESS" or not isinstance(result.get("response"), str):
+                raise AgentError("O AGY não entregou uma resposta final de build válida. Consulte os logs.")
+            return result["response"]
         return stdout

@@ -18,6 +18,7 @@ class Catalog:
     models: dict[str, tuple[Model, ...]]
     sources: dict[str, str]
     commands: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    build_commands: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path = DEFAULT_CONFIG) -> "Catalog":
@@ -72,7 +73,15 @@ class Catalog:
             if provider not in PROVIDERS or not isinstance(command, list) or not command or any(not isinstance(arg, str) or not arg for arg in command):
                 raise ValueError("Cada agents.<provedor>.command deve conter o programa e seus argumentos em uma lista de strings.")
             commands[provider] = tuple(command)
-        return cls(path, models, sources, commands)
+        build_commands = {}
+        build_settings=data.get("build_agents", {})
+        if not isinstance(build_settings,dict):raise ValueError("build_agents deve ser uma tabela TOML.")
+        for provider, settings in build_settings.items():
+            command = settings.get("command") if isinstance(settings, dict) else None
+            if provider not in PROVIDERS or not isinstance(command, list) or not command or any(not isinstance(arg,str) or not arg for arg in command):
+                raise ValueError("Cada build_agents.<provedor>.command deve ser uma lista explícita de programa e argumentos.")
+            build_commands[provider] = tuple(command)
+        return cls(path, models, sources, commands, build_commands)
 
 
 def read_codex_cache() -> tuple[Model, ...]:

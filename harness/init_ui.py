@@ -11,6 +11,7 @@ from textual.widgets import Button, Footer, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .artifacts import InitError
+from .build_artifacts import DependenciesBlocked
 from .dashboard import InitDashboard
 from .init_engine import InitEngine
 from .init_models import Answer, Question
@@ -80,7 +81,7 @@ class InterviewStep(Step):
 
 class FinalPromptStep(Step):
     def __init__(self, path: Path, *, module: str = "init") -> None:
-        super().__init__("Plano final aprovado" if module == "plan" else "Prompt final aprovado", str(path), 5)
+        super().__init__("Relatório do build" if module=="build" else "Plano final aprovado" if module == "plan" else "Prompt final aprovado", str(path), 5)
         self.path = path
 
     def fields(self) -> ComposeResult:
@@ -145,14 +146,17 @@ class InitExecutionStep(Step):
     @work(exclusive=True)
     async def execute(self) -> None:
         try:
-            if self.module == "plan":
+            if self.module == "build":
+                from .build_engine import BuildEngine
+                self.engine = BuildEngine(self.wizard.state,self.wizard.build_agents,on_event=self.execution_event)
+            elif self.module == "plan":
                 from .plan_engine import PlanEngine
                 self.engine = PlanEngine(self.wizard.state, self.wizard.agents, on_event=self.execution_event)
             else:
                 self.engine = InitEngine(self.wizard.state, self.wizard.agents, interview=self.ask, on_event=self.execution_event)
             self.final_path = await self.engine.run()
             self.query_one(InitDashboard).finish("completed")
-            self.progress("Plan concluído. Plano aprovado: .harness/plan/final.md" if self.module == "plan"
+            self.progress("Build concluído. Aplicação e README entregues na raiz; relatório em .harness/build/report.md" if self.module=="build" else "Plan concluído. Plano aprovado: .harness/plan/final.md" if self.module == "plan"
                           else "Init concluído. Prompt aprovado: .harness/prompts/final.md")
             self.query_one("#init-view", Button).display = True
         except asyncio.CancelledError:
@@ -160,6 +164,12 @@ class InitExecutionStep(Step):
                 self.query_one(InitDashboard).finish("cancelled")
                 self.progress(f"{self.module.title()} interrompido. O módulo não foi marcado como concluído.")
                 self.query_one("#init-retry", Button).display = True
+        except DependenciesBlocked as exc:
+            if self.is_mounted:
+                self.query_one(InitDashboard).finish("blocked")
+                self.error(str(exc))
+                self.progress("Build pausado por dependências. Instale os pacotes indicados e execute o build novamente.")
+                self.query_one("#init-retry",Button).display=True
         except (InitError, OSError, ValueError) as exc:
             if self.is_mounted:
                 self.query_one(InitDashboard).finish("failed")

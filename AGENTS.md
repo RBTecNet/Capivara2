@@ -18,8 +18,18 @@
   quando o terminal não oferecer suporte a imagens nativas.
 - Manter o repositório somente local. Não adicionar remotos nem publicar ou
   enviar commits até que o usuário autorize explicitamente.
-- Desenvolver uma etapa por vez. Implementar `init` e `plan` documentais;
-  `build` fica para uma etapa posterior.
+- `init` e `plan` são documentais. O `build` executa preparação do ambiente e
+  implementação do plano aprovado, com gates G0–G3 por task.
+- Build pode instalar dependências e executar CLIs sem confirmações, conforme
+  autorização explícita do usuário. Bloqueios de instalação interrompem o build
+  com pacotes exatos e script/instruções para recuperação manual.
+- Paralelismo exige isolamento, escopos de leitura/escrita sem conflitos e
+  integração validada. Escopos incertos são serializados. Nunca publicar/remotar.
+- G1 confere existência; G2 fidelidade à task; G3 funcionalidade mínima da task,
+  sem testes estéticos ou suítes gerais desnecessárias. Preservar testes de uma
+  task durante as correções e registrar evidências reais de execução.
+- Aplicação produzida pelo build fica na raiz selecionada, com README de
+  instalação/execução. Estado, logs, checks e cópias temporárias ficam em .harness.
 - O plan exige init aprovado e íntegro, preserva suas fases e divide cada fase
   em tasks pequenas. Cada chamada começa sem histórico; o escritor recebe só
   uma task. Tasks e fases exigem aprovação explícita; a conclusão certifica essas

@@ -16,6 +16,7 @@ from .domain import AgentSelection, PROVIDERS
 from .run_events import InitEvent
 from .mascot import Mascot
 from .plan_progress import PlanProgress
+from .build_progress import BuildProgress
 
 
 CYAN = "#05bfd8"
@@ -47,9 +48,14 @@ PLAN_STAGES = {
     "revision_requested": (3, "Correção documental"), "reassessing_phase": (4, "Reavaliação de escopo"),
     "completed": (5, "Finalizando"),
 }
+BUILD_STAGES = {
+    "dependencies": (0,"Verificando dependências"), "installing_dependencies":(0,"Instalando dependências"),
+    "dependencies_ready":(0,"Ambiente preparado"), "dependencies_blocked":(0,"Instalação manual necessária"),
+    "scheduling":(1,"Organizando tasks"), "g0":(2,"G0 · Escrita"), "g1":(3,"G1 · Existência"),
+    "g2":(4,"G2 · Fidelidade"), "g3":(4,"G3 · Funcionalidade"), "completed":(5,"Concluído")}
 PLAN_PIPELINE = ("Origem", "Divisão", "Tasks", "Revisão", "Fases", "Concluído")
 STATUS = {"ready": ("pronto", MUTED), "running": ("em andamento", YELLOW),
-          "completed": ("concluído", GREEN), "cancelled": ("interrompido", YELLOW), "failed": ("falhou", RED)}
+          "completed": ("concluído", GREEN), "blocked": ("instalação manual", YELLOW), "cancelled": ("interrompido", YELLOW), "failed": ("falhou", RED)}
 
 
 class DashboardField(Vertical):
@@ -150,8 +156,8 @@ class InitDashboard(VerticalScroll):
         self.project_dir = project_dir
         self.agents = agents
         self.module = module
-        self.set_class(module == "plan", "planning")
-        self.stages = PLAN_STAGES if module == "plan" else STAGES
+        self.set_class(module in ("plan","build"), "planning")
+        self.stages = BUILD_STAGES if module == "build" else PLAN_STAGES if module == "plan" else STAGES
         self.pipeline_labels = PLAN_PIPELINE if module == "plan" else PIPELINE
         self.event = InitEvent("starting", "starting", 0, None, None, 0, 0, 0, 0, 0, 0)
         self.run_status = "ready"
@@ -167,10 +173,10 @@ class InitDashboard(VerticalScroll):
             with Vertical(id="dash-brand"):
                 yield Static(wordmark(), id="dash-logo", name="CAPIVARA")
                 yield Static("CAPIVARA", id="dash-small-logo")
-                yield Static(f"{self.module.upper()} · DOCUMENTAÇÃO · CONTROLE DE EXECUÇÃO", id="dash-subtitle")
+                yield Static("BUILD · CÓDIGO · GATES DE EXECUÇÃO" if self.module=="build" else f"{self.module.upper()} · DOCUMENTAÇÃO · CONTROLE DE EXECUÇÃO", id="dash-subtitle")
                 yield Static(f"v{release}", id="dash-version")
-            yield Mascot(id="dash-mascot", name="Capivara documentadora")
-            yield Static("CAPIVARA · capivara documentadora", id="dash-tagline")
+            yield Mascot(id="dash-mascot", name="Capivara construtora" if self.module=="build" else "Capivara documentadora")
+            yield Static("CAPIVARA · capivara construtora" if self.module=="build" else "CAPIVARA · capivara documentadora", id="dash-tagline")
         with Grid(id="dash-summary"):
             yield DashboardField("PROJETO", f"▱ {self.project_dir}", id="dash-project", tooltip=str(self.project_dir))
             yield DashboardField("MÓDULO", self.module, id="dash-workflow")
@@ -179,8 +185,10 @@ class InitDashboard(VerticalScroll):
             yield DashboardField("DURAÇÃO", "0m 00s", id="dash-duration")
         with Horizontal(id="dash-work-row"):
             with Vertical(id="dash-pipeline", classes="dash-card"):
-                yield Static("PLAN · CRIAÇÃO (C) E VALIDAÇÃO (V)" if self.module == "plan" else "PIPELINE · FLUXO DO INIT", classes="dash-title")
-                if self.module == "plan":
+                yield Static("BUILD · GATES POR TASK" if self.module == "build" else "PLAN · CRIAÇÃO (C) E VALIDAÇÃO (V)" if self.module == "plan" else "PIPELINE · FLUXO DO INIT", classes="dash-title")
+                if self.module == "build":
+                    yield BuildProgress()
+                elif self.module == "plan":
                     yield PlanProgress()
                 else:
                     yield Static("", id="dash-pipeline-body")
@@ -191,7 +199,8 @@ class InitDashboard(VerticalScroll):
         with Vertical(id="dash-telemetry", classes="dash-card"):
             yield Static(f"TELEMETRIA · {self.module.upper()}", classes="dash-title")
             with Grid(id="dash-metrics"):
-                metrics = (("FASES", "phases"), ("TASKS", "tasks"), ("RODADA", "round"),
+                metrics = (("FASES","phases"),("TASKS","tasks"),("DEPENDÊNCIAS","packages"),("AGENTES CLI","agents"),
+                           ("OPERAÇÕES","operations"),("INVOCAÇÕES","invocations"),("DEVOLUÇÕES","corrections"),("TOKENS","tokens")) if self.module == "build" else (("FASES", "phases"), ("TASKS", "tasks"), ("RODADA", "round"),
                            ("OPERAÇÕES", "operations"), ("INVOCAÇÕES", "invocations"),
                            ("CORREÇÕES", "corrections"), ("CONTRATOS", "contract_errors"), ("TOKENS", "tokens")) if self.module == "plan" else (
                                    ("ENTREVISTA", "questions"), ("RODADA", "round"), ("OPERAÇÕES", "operations"),
@@ -199,6 +208,8 @@ class InitDashboard(VerticalScroll):
                                    ("INFERÊNCIAS", "inferences"), ("TOKENS", "tokens"))
                 for label, key in metrics:
                     hint = {
+                        "packages": "Dependências verificadas / dependências necessárias.",
+                        "agents": "Processos CLI ativos / máximo configurado; o scheduler limita também os workers de tasks.",
                         "phases": "Fases aprovadas / fases da origem, incluindo a fase 0.",
                         "tasks": "Tasks aprovadas / tasks identificadas até o momento; o total aumenta durante a divisão.",
                         "questions": "Respostas registradas / perguntas preparadas, somando as rodadas.",
@@ -216,10 +227,10 @@ class InitDashboard(VerticalScroll):
             yield Static("EVENTOS RECENTES", classes="dash-title")
             yield RichLog(wrap=True, highlight=False, markup=False, max_lines=200, id="init-log")
         yield Static("", id="error", markup=False)
-        yield Static("Os agentes geram documentação; os artefatos ficam em .harness.", id="init-progress", markup=False)
+        yield Static("A aplicação será entregue na raiz; estado e evidências ficam em .harness." if self.module=="build" else "Os agentes geram documentação; os artefatos ficam em .harness.", id="init-progress", markup=False)
         with Horizontal(id="dash-actions"):
             yield Button("Interromper · Esc", id="back", compact=True)
-            for label, key in (("Ver plano final" if self.module == "plan" else "Ver prompt final", "init-view"),
+            for label, key in (("Ver relatório" if self.module == "build" else "Ver plano final" if self.module == "plan" else "Ver prompt final", "init-view"),
                                ("Tentar novamente", "init-retry"), ("Fechar", "init-close")):
                 button = Button(label, id=key, compact=True)
                 button.display = False
@@ -229,6 +240,10 @@ class InitDashboard(VerticalScroll):
     def on_mount(self) -> None:
         self.responsive()
         self.call_after_refresh(self.render_data)
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        if event.widget.id in ('back','init-view','init-retry','init-close'):
+            self.call_after_refresh(event.widget.scroll_visible, animate=False, immediate=True, force=True)
 
     def on_resize(self, event: events.Resize) -> None:
         self.responsive()
@@ -271,7 +286,8 @@ class InitDashboard(VerticalScroll):
                 label = "Revisão aprovada · salvando plano final" if self.module == "plan" else "Revisão aprovada · salvando prompt final"
             if self.module == "plan" and event.phase_number is not None:
                 label += f" · fase {event.phase_number}"
-            self.log(f"etapa · {label.lower()}" + (f" · rodada {event.round}" if event.round else ""), CYAN)
+            suffix = (f" · {event.task_id}" if event.task_id else "") if self.module=="build" else (f" · rodada {event.round}" if event.round else "")
+            self.log(f"etapa · {label.lower()}" + suffix, CYAN)
         elif event.kind == "agent_started":
             selection = self.agents.get(event.active_role)
             provider = PROVIDERS.get(selection.provider, selection.provider) if selection else "CLI"
@@ -305,24 +321,37 @@ class InitDashboard(VerticalScroll):
         if self.module == "plan" and self.event.phase_number is not None and self.run_status != "completed":
             stage_label += f" · fase {self.event.phase_number}"
         self.query_one("#dash-stage", DashboardField).set_value(Text(f"▶ {stage_label}", style=CYAN))
-        values = (("phases", f"{self.event.phases_approved}/{self.event.phases_total} aprovadas"),
+        values = (("phases",f"{self.event.phases_approved}/{self.event.phases_total} concluídas"),
+                  ("tasks",f"{self.event.tasks_approved}/{self.event.tasks_total} concluídas"),
+                  ("packages",f"{self.event.packages_ready}/{self.event.packages_total} prontas"),
+                  ("agents",f"{self.event.active_agents}/{self.event.max_agents}")) if self.module == "build" else (("phases", f"{self.event.phases_approved}/{self.event.phases_total} aprovadas"),
                   ("tasks", f"{self.event.tasks_approved}/{self.event.tasks_total} aprovadas")) if self.module == "plan" else (
                   ("questions", f"{self.event.answers}/{self.event.questions} respostas"),
                   ("inferences", str(self.event.inferences)))
         for key, value in (*values,
-                           ("round", str(self.event.round)), ("operations", str(self.event.operations)),
+                           *(((("round", str(self.event.round)),) if self.module != "build" else ())), ("operations", str(self.event.operations)),
                            ("invocations", str(self.event.invocations)), ("corrections", str(self.event.corrections))):
             self.query_one(f"#metric-{key}", DashboardField).set_value(value)
         if self.module == "plan":
             self.query_one("#metric-contract_errors", DashboardField).set_value(str(self.event.contract_errors))
         self.query_one("#dash-provider-body", Static).update(self.provider())
-        if self.module == "plan":
+        if self.module == "build":
+            self.query_one(BuildProgress).update_event(self.event,self.run_status=="running")
+        elif self.module == "plan":
             self.query_one(PlanProgress).update_items(self.event.items)
         else:
             self.query_one("#dash-pipeline-body", Static).update(self.pipeline())
         self.tick()
 
     def provider(self) -> Text:
+        if self.module=="build" and self.event.active_agents>1:
+            result=Text(f"{self.event.active_agents} agentes CLI em atividade\n",style=CYAN)
+            for role,label,count in (("writer","escritor",self.event.active_writers),("reviewer","revisor",self.event.active_reviewers)):
+                if not count:continue
+                selection=self.agents[role]
+                result.append(f"\n{label} ×{count} · {PROVIDERS[selection.provider]}\n",style=CYAN)
+                result.append(f"{selection.model} / {selection.effort}",style=BODY)
+            return result
         role = self.event.active_role or self.event.last_role
         if role is None:
             return Text("Aguardando a primeira chamada.\nAs chamadas aparecerão neste painel.", style=MUTED)

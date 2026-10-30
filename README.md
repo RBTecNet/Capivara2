@@ -37,7 +37,7 @@ permanece sem remoto até autorização do usuário.
 1. Conferir ou editar a pasta do projeto; Enter confirma.
 2. Escolher `init` ou `plan`. O plan exige init aprovado e íntegro e começa
    selecionado após sua conclusão. Depois do plan aprovado, `build` é destacado,
-   mas sua execução ainda será implementada.
+   e pode ser executado usando os artefatos aprovados.
 3. No init, escolher entre prompt manual, arquivo e base MCP. No plan, essa
    etapa é pulada: a origem é sempre `.harness/prompts/final.md`.
 4. Digitar o prompt com múltiplas linhas, informar um arquivo UTF-8 ou selecionar
@@ -130,7 +130,7 @@ Reexecutar o init substitui os artefatos anteriores dessa pasta gerenciada e
 reinicia os status de plan/build. Os arquivos da aplicação na raiz são preservados.
 Uma pasta `.harness` não reconhecida é preservada e gera uma mensagem, em vez de
 ser apagada. Ao reabrir um projeto cujo prompt final aprovado continua íntegro,
-`plan` é destacado como próximo módulo. O build permanece para uma etapa posterior.
+`plan` é destacado como próximo módulo. O build usa o plano aprovado para preparar o ambiente e gerar a aplicação.
 
 ## Plan documental
 
@@ -229,8 +229,119 @@ projeto. Uma interrupção ou falha mantém os registros e não libera o build.
 
 Só depois de aprovar todas as tasks, todas as fases e o plano completo, o plan é
 marcado como concluído. Ao reabrir a TUI, o build fica habilitado e selecionado se
-a origem e o plano aprovado continuarem íntegros. Seu menu informa que a execução
-será implementada posteriormente. O plan continua disponível para reexecução.
+a origem e o plano aprovado continuarem íntegros. O plan continua disponível para reexecução.
+
+## Build
+
+O build exige init e plan aprovados e íntegros. A origem é sempre `.harness/plan`;
+a aplicação produzida fica na **raiz do projeto selecionado**. O wizard seleciona
+escritor/modelo/effort, modo **serial** ou **paralelo**, máximo de agentes (1 a 32,
+quando paralelo) e revisor compartilhado ou independente. Não há escolha de prompt.
+
+Primeiro, o builder levanta runtime, pacotes de desenvolvimento e ferramentas de
+verificação necessárias à stack. Executa check, tenta a instalação sem interação e
+repete o check. Comandos recebem stdin fechado e configurações não interativas;
+`sudo` automático usa `-n`. Uma dependência continua pendente se o check real falhar.
+
+Um bloqueio interrompe o build antes da geração de código: o painel informa os pacotes,
+`.harness/build/manual-install.md` contém instruções e erros concretos, e
+`install-manual.sh` é criado quando existem comandos utilizáveis. O script manual
+pode pedir a autenticação do próprio usuário. Quando não há comandos automáticos,
+a orientação é específica e não há script vazio fingindo instalar. Após resolver,
+execute build novamente. Dependências adicionais de um check G3 são instaladas numa
+área de ferramentas interna, sem alterar o manifesto da aplicação durante o teste.
+CLIs ausentes precisam ser instalados/autenticados ou configurados no catálogo.
+
+O builder cria um mapa de arquivos e dependências por task. Cada worker usa uma cópia
+isolada da aplicação e das dependências locais. Reservas incluem escritas e leituras;
+uma escrita que conflita com leitura/escrita de outra task impede paralelismo.
+Escopos desconhecidos (`**`) são serializados. Fases respeitam suas dependências e
+a fase 0. O máximo configurado é um teto; conflitos podem reduzir o número efetivo.
+
+Antes da integração, o harness confere os arquivos realmente alterados contra a reserva
+e compara a base com a raiz atual. Mudanças fora da reserva ou alterações externas
+não são sobrescritas. As integrações são serializadas e têm restauração em caso de erro.
+Cancelamento aguarda a integração em andamento terminar seu checkpoint.
+
+Cada task passa pelos gates:
+
+| Gate | Responsabilidade | Evidência |
+|---|---|---|
+| G0 | Escritor produz a unidade | Arquivos reais na cópia isolada |
+| G1 | Auditor confere existência | Arquivos declarados existem; código não é substituído por uma descrição |
+| G2 | Validador compara à task | Rejeições citam requisito e trecho real do código, com mudança e aceite específicos |
+| G3 | Verificador comprova funcionamento mínimo | Até três checks focados, executados pelo harness, com assertivas ou saída esperada |
+
+G1 não julga qualidade. Ausência de entrega retorna a G0. G2/G3 rejeitados ficam
+vermelhos; ao devolver para escrita, os gates seguintes voltam a aguardar e G0 fica
+amarelo. Aprovação de G3 só fica verde quando a entrega também foi integrada.
+Tasks documentais entregam documentos reais e podem dispensar comandos G3;
+a existência e a fidelidade do documento continuam obrigatórias.
+
+Checks G3 exercitam **a unidade da task**, com dados isolados, sem suíte do sistema,
+matriz extensa ou critérios estéticos. O verificador pode escolher Playwright ou outra
+ferramenta adequada. Não basta `echo ok`, `assert True` ou um exit code sem verificação:
+o check executa um arquivo com assertivas ligado à unidade ou compara uma saída real
+com `expected_stdout`. Fontes não podem ser alteradas pelo validador ou pelo teste.
+Os scripts e comandos ficam congelados durante as correções daquela execução; o escritor
+não pode afrouxá-los. Recorrência do mesmo conflito ou correção que não muda a entrega
+gera diagnóstico, sem aprovação por insistência. Caches Python da cópia são limpos antes
+dos checks para evitar validar bytecode de uma versão anterior gravada no mesmo segundo.
+
+Uma task adicional **Documentação de instalação e execução** garante README com
+pré-requisitos, comandos reais, configuração e exemplos de uso aplicáveis. Variáveis
+necessárias usam `.env.example` sem credenciais. Cada fase tem somente uma bolinha:
+vazia antes de iniciar, amarela piscando durante o trabalho e verde após suas tasks.
+Tasks têm quatro bolinhas G0–G3 e uma barra mostra o progresso das entregas concluídas.
+
+Execuções seguintes reutilizam tasks já integradas quando a fonte e os arquivos
+continuam válidos. Alterações externas invalidam as reservas afetadas e suas dependentes.
+O build preserva o init, o plan e arquivos existentes da aplicação. Histórico de comandos,
+saídas de agentes, resultados e cópias ficam em `.harness/build`, com logs separados por
+execução. Nenhum push ou publicação é realizado.
+
+### CLIs sem confirmação
+
+As permissões de execução são exclusivas do build; init e plan continuam documentais.
+Cada chamada inicia processo novo e não usa `--continue` ou `--session`.
+
+| CLI | Configuração usada |
+|---|---|
+| Codex | `--dangerously-bypass-approvals-and-sandbox` ([documentação oficial](https://learn.chatgpt.com/docs/developer-commands?surface=cli)) |
+| Claude | `--dangerously-skip-permissions` ([referência oficial](https://code.claude.com/docs/en/cli-reference)) |
+| OpenCode | `run --auto --standalone`; bloqueios explícitos continuam valendo ([permissões](https://opencode.ai/docs/permissions/)) |
+| AGY | `--dangerously-skip-permissions`, entrada/saída stream-json e schema ([modo headless](https://antigravity.google/docs/cli/headless/)) |
+
+Codex e OpenCode foram conferidos também pela ajuda dos executáveis locais. A validação
+real de geração e comandos desta etapa usa Codex; Claude e AGY exigem suas próprias
+instalações/autenticações. O OpenCode preserva regras explícitas de deny.
+
+Adaptadores personalizados de execução ficam separados dos adaptadores documentais:
+
+```toml
+[build_agents.agy]
+command = ["/caminho/para/seu-adaptador-build-agy", "--sua-flag-sem-confirmacao"]
+```
+
+Recebem JSON/schema no prompt em stdin, devem operar no cwd fornecido e devolver o JSON
+final. `CAPIVARA2_EXECUTION=build`, `CAPIVARA2_WORKSPACE`, `CAPIVARA2_ROLE`, modelo, effort,
+schema e caminho de saída identificam a chamada. O wrapper precisa configurar suas próprias
+permissões não interativas. Credenciais permanecem na configuração privada de cada CLI.
+
+```text
+.harness/build/
+  source.json                   # origem aprovada, imutável durante a execução
+  state.json                    # mapa, progresso, árvore integrada e retomada
+  report.md                     # relatório após conclusão
+  manual-install.md             # pacotes e instruções se houver bloqueio
+  install-manual.sh             # recuperação manual, quando viável
+  control/                      # settings por execução, dependências e blueprint
+  tasks/<id>/                   # devoluções, checks e aprovação de cada task
+  checks/<id>/                  # scripts de verificação preservados
+  tools/                        # ferramentas internas adicionais do G3
+  work/<id>-<uuid>/             # cópias isoladas usadas pelos workers
+  log/                          # comandos, resultados, entradas e saídas reais
+```
 
 ## Painel de execução
 
@@ -414,3 +525,8 @@ exigências contrárias a um aceite vigente, mudanças sobre versão antiga, cor
 vagas, falha de JSON repetida, escritor que ignora o patch, classificação de QA com
 redações diferentes, partições mistas sem perda de texto e certificados adulterados.
 Nenhuma dessas falhas libera o build ou produz aprovação por tentativas.
+
+Os testes do build exercitam instalação automática e bloqueada, recuperação manual,
+G1 sem entrega, rejeições específicas de G2, falhas reais de G3, comparação de stdout,
+congelamento de verificações, validação sem alteração de fonte, reservas conflitantes,
+execução serial/paralela, retomada, cancelamento e wizard/dashboard responsivos.

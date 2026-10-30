@@ -1,0 +1,470 @@
+"""Builder retomável: dependências, reservas de arquivos e gates G0–G3."""
+
+import asyncio
+from dataclasses import asdict
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import shlex
+import shutil
+
+from .artifacts import digest
+from .build_artifacts import BuildError, BuildStore, DependenciesBlocked, load_plan
+from .build_commands import run_command
+from .build_instructions import build_prompt
+from .build_models import (BuildBlueprint, EnvironmentSpec, FidelityReview, TaskScope,
+                           VerificationSpec, WriterResult)
+from .build_workspace import Workspace, conflicts, diff, manifest, matches, relative_path
+from .plan_models import agent_schema
+from .run_events import BuildItem, InitEvent
+
+
+class BuildEngine:
+    def __init__(self,state,agents,*,on_event=None):
+        self.state=state;self.agents=agents;self.on_event=on_event
+        self.store=BuildStore(state.project_dir)
+        self.source={};self.tasks={};self.scopes={};self.progress={};self.saved={}
+        self.call_id=self.operations=self.corrections=self.contract_errors=0
+        self.stage='dependencies';self.active={};self.last_role=None
+        self.event_task_id=None
+        self.packages_total=self.packages_ready=0
+        self.publish_lock=asyncio.Lock()
+        self.tools_lock=asyncio.Lock()
+        self.rejections={};self.executed_checks={}
+
+    def emit(self,kind='stage_changed'):
+        if not self.on_event:return
+        items=[];completed_phases=0;phase_done={}
+        for phase in self.source.get('plan',{}).get('phases',[]):
+            ids=[key for key,value in self.tasks.items() if value['phase_number']==phase['number']]
+            done=bool(self.progress) and all(self.progress.get(key,{}).get('completed') for key in ids)
+            if not ids:
+                dependencies=set(phase['depends_on'])|({0} if phase['number']>0 else set())
+                done=done and all(phase_done.get(dep,False) for dep in dependencies)
+            phase_done[phase['number']]=done
+            started=any(self.progress.get(key,{}).get('started') for key in ids)
+            status='completed' if done else 'running' if started else 'waiting'
+            completed_phases+=done
+            items.append(BuildItem(f"P{phase['number']}",phase['title'],'phase',status=status))
+            for key in ids:
+                p=self.progress.get(key,{})
+                items.append(BuildItem(key,self.tasks[key]['content']['title'],'task',
+                    gates=tuple(p.get('gates',['waiting']*4)),status='completed' if p.get('completed') else 'waiting'))
+        role=next(iter(self.active.values())) if len(self.active)==1 else None
+        self.on_event(InitEvent(kind,self.stage,1+self.corrections,role,self.last_role,self.operations,self.call_id,
+            self.corrections,0,0,0,module='build',phases_total=len(self.source.get('plan',{}).get('phases',[])),
+            phases_approved=completed_phases,tasks_total=len(self.tasks),
+            tasks_approved=sum(p.get('completed',False) for p in self.progress.values()),
+            contract_errors=self.contract_errors,build_items=tuple(items),active_agents=len(self.active),
+            max_agents=self.state.max_agents if self.state.build_mode=='parallel' else 1,
+            packages_total=self.packages_total,packages_ready=self.packages_ready,task_id=self.event_task_id,
+            active_writers=list(self.active.values()).count('writer'),active_reviewers=list(self.active.values()).count('reviewer')))
+
+    def announce(self,stage,message,**details):
+        self.stage=stage;self.event_task_id=details.get('task_id');self.store.event(stage,message,**details);self.emit()
+
+    def checkpoint(self):
+        self.saved.update(tasks=self.progress,blueprint={'tasks':[s.model_dump() for s in self.scopes.values()]})
+        self.store.json('state.json',self.saved)
+        self.emit('counts_changed')
+
+    def gate(self,key,number,state):
+        p=self.progress[key];p['started']=True;p['gates'][number]=state
+        self.announce(f'g{number}',f'{key} · G{number} · {state}',task_id=key,gate=number,state=state)
+        self.checkpoint()
+
+    async def invoke(self,role,operation,data,model,cwd,check=None):
+        self.operations+=1;feedback='';rejected=None
+        schema=agent_schema(model)
+        if operation=='verification' and data.get('delivered_files'):
+            task=data['task']
+            quotes=[task['seed']['scope'],task['content']['objective'],*task['content']['implementation_steps'],
+                    *task['content']['deliverables'],*data.get('requirements',[])]
+            schema['$defs']['FunctionalCheck']['properties']['target_files']['items']['enum']=data['delivered_files']
+            schema['$defs']['FunctionalCheck']['properties']['requirement_quote']['enum']=list(dict.fromkeys(quotes))
+        for attempt in range(2):
+            self.call_id+=1;call=self.call_id
+            request=dict(data,contract_error=feedback,rejected_response=rejected)
+            self.active[call]=role;self.last_role=role;self.emit('agent_started')
+            try:
+                output=await self.agents.generate(self.state.reviewer if role=='reviewer' else self.state.writer,
+                    role,build_prompt(operation,request,schema),schema,self.store,call,cwd=cwd,allow_tools=True)
+            finally:
+                self.active.pop(call,None);self.emit('agent_finished')
+            self.store.write(f'log/{role}-{call:04d}.response.txt',output)
+            try:
+                text=output.strip()
+                if text.startswith('```') and text.endswith('```'):text='\n'.join(text.splitlines()[1:-1])
+                value=model.model_validate_json(text)
+                if check:check(value)
+                return value
+            except ValueError as exc:
+                self.contract_errors+=1;feedback=str(exc);rejected=output
+                self.store.event('format_correction','Resposta inválida devolvida uma vez para reparo.',operation=operation,detail=feedback)
+                self.emit('format_correction')
+                if attempt:raise BuildError(f'{operation}: contrato inválido após uma oportunidade de reparo. {feedback}') from exc
+
+    async def prepare_environment(self):
+        self.announce('dependencies','Levantando dependências do plano e verificando o ambiente.')
+        directory=self.store.path('control/environment-analysis');directory.mkdir(parents=True,exist_ok=True)
+        spec=await self.invoke('reviewer','environment',{'phase_zero':self.source['plan']['phases'][0],
+            'stack':self.source['init']['document']['stack'],'tools':self.source['init']['document']['tools'],
+            'system':platform.system(),'platform':platform.platform(),'providers':sorted({self.state.writer.provider,self.state.reviewer.provider}),
+            'executables':{name:shutil.which(name) for name in ('node','npm','pnpm','python3','pip','uv','cargo','go','dotnet','apt-get','dnf','pacman','brew','codex','claude','opencode','agy')}},
+            EnvironmentSpec,directory)
+        self.store.json('control/dependencies.json',spec.model_dump())
+        await self.ensure_dependencies(spec.dependencies,self.state.project_dir)
+
+    async def ensure_dependencies(self,dependencies,cwd):
+        self.packages_total+=len(dependencies);missing=[];attempted=set()
+        for index,dependency in enumerate(dependencies,1):
+            prefix=f'log/dependency-{self.store.run_id}-{self.operations}-{index:03d}'
+            result=await run_command(dependency.check,cwd,self.store,prefix+'-check')
+            if result['exit_code']!=0:
+                for j,install in enumerate(dependency.install):
+                    key=json.dumps(install.model_dump(),sort_keys=True)
+                    if key in attempted:continue
+                    attempted.add(key)
+                    self.announce('installing_dependencies',f'Instalando dependência: {dependency.name}.')
+                    installed=await run_command(install,cwd,self.store,prefix+f'-install-{j}')
+                    if installed['exit_code']!=0:break
+                result=await run_command(dependency.check,cwd,self.store,prefix+'-recheck')
+            if result['exit_code']==0:self.packages_ready+=1
+            else:missing.append({'dependency':dependency.model_dump(),'exit_code':result['exit_code'],
+                                 'error':result['stderr'][-3000:]})
+            self.emit()
+        if missing:
+            self.store.json('control/missing-dependencies.json',missing)
+            lines=['#!/usr/bin/env bash','set -euo pipefail',f'cd -- {shlex.quote(str(cwd))}']
+            commands=set()
+            notes=['# Dependências pendentes','']
+            for entry in missing:
+                dep=entry['dependency'];lines+=['']
+                lines.extend('# Pacote: '+line for line in dep['name'].splitlines())
+                notes.extend([f"## {dep['name']}",'',dep['purpose'],'',dep['manual_instructions'],'',
+                              f"Falha observada (saída {entry['exit_code']}):",'',entry['error'],''])
+                for line in dep['manual_instructions'].splitlines():lines.append('# '+line)
+                for command in dep['install']:
+                    argv=list(command['argv'])
+                    # No script manual, sudo pode pedir a autenticação do próprio usuário.
+                    if argv and Path(argv[0]).name=='sudo':argv=[a for a in argv if a!='-n']
+                    text=' '.join(f'{k}={shlex.quote(v)}' for k,v in ((v['name'],v['value']) for v in command['env']))
+                    text=(('env '+text+' ') if text else '')+shlex.join(argv)
+                    if text not in commands:lines.append(text);commands.add(text)
+            self.store.write('manual-install.md','\n'.join(notes)+'\n')
+            if commands:
+                self.store.write('install-manual.sh','\n'.join(lines)+'\n');os.chmod(self.store.path('install-manual.sh'),0o700)
+            else:self.store.path('install-manual.sh').unlink(missing_ok=True)
+            names=', '.join(e['dependency']['name'] for e in missing)
+            self.announce('dependencies_blocked',f'Dependências pendentes: {names}.')
+            recovery=f'Script disponível: {self.store.path("install-manual.sh")}. ' if commands else 'Não há instalador automático viável para estes pacotes. '
+            raise DependenciesBlocked(f'Instale manualmente: {names}. {recovery}Instruções específicas: {self.store.path("manual-install.md")}. Depois execute build novamente.')
+        self.announce('dependencies_ready','Dependências verificadas; preparação concluída.')
+
+    async def prepare_tasks(self):
+        for phase in self.source['plan']['phases']:
+            for task in phase['tasks']:
+                self.tasks[task['id']]=task
+        last=self.source['plan']['phases'][-1]['number']
+        self.tasks['BUILD-README']={'id':'BUILD-README','phase_number':last,'context_policy':'fresh',
+            'seed':{'scope':'Entregar documentação de instalação, configuração e execução da aplicação produzida.',
+                    'source_quotes':[],'coverage':[]},
+            'content':{'title':'Documentação de instalação e execução','objective':'Fornecer README útil para instalar e executar a aplicação.',
+                       'implementation_steps':['Documentar dependências, instalação e execução reais.','Incluir exemplos de configuração e uso aplicáveis, sem segredos.'],
+                       'deliverables':['README.md e exemplos de variáveis necessários.']}}
+        roles={}
+        for item in self.source.get('classification',{}).get('activities',[]):
+            for index,part in enumerate(item['parts'],1):
+                identifier=item['source_id'] if len(item['parts'])==1 else f"{item['source_id']}.{index:02d}"
+                roles[identifier]=part['responsibility']
+        def validate(blueprint):
+            if len({s.task_id for s in blueprint.tasks})!=len(blueprint.tasks) or {s.task_id for s in blueprint.tasks}!=set(self.tasks)-{'BUILD-README'}:
+                raise ValueError('Mapeie exatamente todos os IDs de tasks do plan, sem omissões ou tasks novas.')
+            for scope in blueprint.tasks:
+                task=self.tasks[scope.task_id]
+                assigned=[roles.get(c['requirement_id']) for c in task['seed'].get('coverage',[])]
+                if 'implementation' in assigned and scope.kind=='documentation':
+                    raise ValueError(f'{scope.task_id} contém implementação aprovada no plan e exige kind code/setup, com G3 executável.')
+                if task['phase_number']==0 and scope.kind!='documentation':
+                    raise ValueError('Fase 0 do plan é catálogo documental; a instalação já ocorre na etapa de dependências.')
+                for path in scope.writes+scope.reads:relative_path(path,pattern=True)
+                valid_ids={f'R{i:03d}' for i in range(1,len(self.source['init']['document']['requirements'])+1)}
+                if not set(scope.requirement_ids).issubset(valid_ids):raise ValueError('Use requirement_ids Rxxx fornecidos, sem criar IDs.')
+                if scope.task_id in scope.depends_on or any(d not in self.tasks or d=='BUILD-README' for d in scope.depends_on):
+                    raise ValueError('Dependências devem apontar IDs de tasks existentes, sem autorreferência.')
+            candidate={s.task_id:s for s in blueprint.tasks}
+            self.validate_graph(candidate)
+        cached=self.saved.get('blueprint')
+        if cached:
+            value=BuildBlueprint.model_validate({'tasks':[s for s in cached['tasks'] if s['task_id']!='BUILD-README']})
+            validate(value)
+        else:
+            directory=self.store.path('control/blueprint-analysis');directory.mkdir(parents=True,exist_ok=True)
+            value=await self.invoke('reviewer','blueprint',{'plan':self.source['plan'],'product_requirements':{
+                    f'R{i:03d}':text for i,text in enumerate(self.source['init']['document']['requirements'],1)}},BuildBlueprint,directory,validate)
+        self.scopes={s.task_id:s for s in value.tasks}
+        self.scopes['BUILD-README']=TaskScope(task_id='BUILD-README',kind='documentation',writes=['README.md','.env.example'],reads=['**'],depends_on=list(set(self.tasks)-{'BUILD-README'}),
+            requirement_ids=[f'R{i:03d}' for i in range(1,len(self.source['init']['document']['requirements'])+1)])
+        self.validate_graph(self.scopes)
+        previous=self.saved.get('tasks',{});accepted=self.saved.get('accepted_tree',{})
+        current=await asyncio.to_thread(manifest,self.state.project_dir)
+        changed=diff(accepted,current) if accepted else []
+        invalid={key for key,scope in self.scopes.items() if any(matches(p,scope.writes+scope.reads) for p in changed)}
+        while True:
+            expanded=invalid|{key for key in self.scopes if self.dependencies(key)&invalid}
+            if expanded==invalid:break
+            invalid=expanded
+        for key in self.tasks:
+            p=previous.get(key,{})
+            if p.get('completed') and key not in invalid and p.get('gates')==['completed']*4:
+                self.progress[key]=p
+            else:self.progress[key]={'gates':['waiting']*4,'completed':False,'started':False,'attempts':0}
+        self.saved['accepted_tree']=current
+        self.checkpoint()
+
+    def dependencies(self,key):
+        scope=self.scopes[key];task=self.tasks[key]
+        phase=next(p for p in self.source['plan']['phases'] if p['number']==task['phase_number'])
+        phase_deps=set(phase['depends_on'])|({0} if phase['number']>0 else set())
+        return set(scope.depends_on)|{k for k,t in self.tasks.items() if t['phase_number'] in phase_deps}
+
+    def validate_graph(self,scopes):
+        saved=self.scopes;self.scopes=scopes
+        try:
+            visiting=set();done=set()
+            def visit(key):
+                if key in visiting:raise ValueError('Dependências de tasks/fases formam um ciclo.')
+                if key in done:return
+                visiting.add(key)
+                for dep in self.dependencies(key):
+                    if dep in scopes:visit(dep)
+                visiting.remove(key);done.add(key)
+            for key in scopes:visit(key)
+        finally:self.scopes=saved
+
+    def code_context(self,key,workspace,feedback):
+        return {'task':self.tasks[key],'scope':self.scopes[key].model_dump(),
+            'objective':self.source['init']['document']['objective'],
+            'requirements':[text for i,text in enumerate(self.source['init']['document']['requirements'],1)
+                            if f'R{i:03d}' in self.scopes[key].requirement_ids],
+            'constraints':self.source['init']['document']['constraints'],
+            'stack':self.source['init']['document']['stack'],'feedback':feedback,
+            'workspace':str(workspace.root)}
+
+    def reject(self,key,gate,feedback,workspace):
+        identity=feedback
+        if gate==3:
+            identity=[(f['command']['argv'],f['acceptance']) for f in feedback['functional_failures']]
+        elif gate==2:
+            identity=[(i['file'],i['acceptance']) for i in feedback['issues']]
+        fingerprint=digest(json.dumps((gate,identity),sort_keys=True,ensure_ascii=False))
+        signature=(key,fingerprint)
+        if signature in self.rejections:
+            raise BuildError(f'{key}: o mesmo conflito reapareceu no G{gate}. O contrato precisa de diagnóstico; não haverá tentativas por insistência.')
+        self.rejections[signature]=True
+        self.corrections+=1
+        self.gate(key,gate,'waiting' if gate==1 else 'rejected')
+        self.store.json(f'tasks/{key}/rejection-{self.progress[key]["attempts"]}.json',{'gate':gate,'feedback':feedback})
+
+    async def task_run(self,key):
+        scope=self.scopes[key];p=self.progress[key]
+        async with self.publish_lock:
+            copying=asyncio.create_task(asyncio.to_thread(Workspace,self.state.project_dir,self.store,key))
+            try:workspace=await asyncio.shield(copying)
+            except asyncio.CancelledError:
+                await copying
+                raise
+        feedback=None;verification=None;before_failed=None
+        while True:
+            p['attempts']+=1
+            p['gates']=['running','waiting','waiting','waiting']
+            self.gate(key,0,'running')
+            before=await asyncio.to_thread(manifest,workspace.root)
+            workspace.restore_checks()
+            result=await self.invoke('writer','write',self.code_context(key,workspace,feedback),WriterResult,workspace.root)
+            changes,tree=await asyncio.to_thread(workspace.audit,scope)
+            if feedback and tree==before_failed:
+                raise BuildError(f'{key}: o escritor não modificou a entrega para atender a devolução anterior.')
+            self.gate(key,0,'completed');self.gate(key,1,'running')
+            files=[];missing=[]
+            for name in result.files:
+                name=relative_path(name)
+                if not matches(name,scope.writes):raise BuildError(f'{key}: arquivo entregue fora da reserva: {name}.')
+                path=workspace.root/name
+                if not path.is_file() or not path.stat().st_size:missing.append(name)
+                else:files.append(name)
+            substantive=any(Path(f).suffix.lower() not in ('.md','.rst','.txt','.log') for f in files)
+            if missing or not files or (scope.kind=='code' and not substantive):
+                feedback={'files_missing':missing,'required_change':('Grave os documentos reais previstos pela task; não basta afirmar que foram criados.' if scope.kind=='documentation' else 'Entregue os arquivos reais de código/configuração da task, não apenas uma descrição.'),'acceptance':'Arquivos da entrega existem e têm conteúdo apropriado à task.'}
+                self.reject(key,1,feedback,workspace);before_failed=tree;await asyncio.sleep(0);continue
+            self.gate(key,1,'completed');self.gate(key,2,'running')
+            immutable=tree
+            def validate_fidelity(value):
+                task=self.tasks[key]
+                source='\n'.join([task['seed']['scope'],task['content']['objective'],*task['content']['implementation_steps'],
+                                  *task['content']['deliverables'],*self.code_context(key,workspace,feedback)['requirements']])
+                for issue in value.issues:
+                    name=relative_path(issue.file)
+                    if not matches(name,scope.writes):raise ValueError('G2 só pode apontar arquivos da responsabilidade desta task.')
+                    if issue.requirement_quote not in source:raise ValueError('Cite literalmente um requisito da task/origem, sem inventar exigências.')
+                    path=workspace.root/name
+                    if issue.missing:
+                        if path.exists():raise ValueError('O arquivo apontado como ausente existe.')
+                    elif not issue.evidence_quote or not path.is_file() or issue.evidence_quote not in path.read_text(encoding='utf-8',errors='replace'):
+                        raise ValueError('A evidência deve ser um trecho literal do arquivo entregue.')
+            review=await self.invoke('reviewer','fidelity',{**self.code_context(key,workspace,feedback),'delivered_files':files,'changed_files':changes},FidelityReview,workspace.root,validate_fidelity)
+            if await asyncio.to_thread(manifest,workspace.root)!=immutable:
+                raise BuildError(f'{key}: G2 alterou a fonte em vez de somente auditá-la.')
+            if not review.approved:
+                feedback={'issues':[i.model_dump() for i in review.issues]}
+                self.reject(key,2,feedback,workspace);before_failed=tree;await asyncio.sleep(0);continue
+            self.gate(key,2,'completed');self.gate(key,3,'running')
+            if verification is None:
+                def validate_checks(value):
+                    if scope.kind!='documentation' and not value.checks:raise ValueError('Código/setup exige ao menos uma verificação funcional executável.')
+                    task=self.tasks[key]
+                    source='\n'.join([task['seed']['scope'],task['content']['objective'],
+                                     *task['content']['implementation_steps'],*task['content']['deliverables'],
+                                     *task['seed']['source_quotes'],*self.code_context(key,workspace,feedback)['requirements']])
+                    for check in value.checks:
+                        if check.requirement_quote not in source and check.requirement_quote not in self.tasks[key]['seed']['scope']:
+                            raise ValueError('Cada check deve citar literalmente o requisito da task, sem criar critérios novos.')
+                        if not set(check.target_files).issubset(files):raise ValueError('Os targets dos checks devem ser arquivos da entrega desta task.')
+                        if Path(check.command.argv[0]).name in ('echo','true','printf','cat','ls'):
+                            raise ValueError('G3 exige execução funcional, não impressão/listagem que sempre passa.')
+                        for argument in check.command.argv:
+                            if argument.startswith('.harness/checks/') and not (workspace.root/argument).exists():
+                                raise ValueError(f'O script de check {argument} não foi criado. Crie o arquivo antes de responder.')
+                        if check.assertion_file:
+                            name=Path(check.assertion_file)
+                            if name.is_absolute() or '..' in name.parts or not name.as_posix().startswith('.harness/checks/'):
+                                raise ValueError('assertion_file deve estar dentro de .harness/checks.')
+                            test_file=workspace.root/name
+                            if not test_file.is_file() or not test_file.stat().st_size:raise ValueError('O arquivo de assertivas precisa existir e conter verificações reais.')
+                            if check.assertion_file not in check.command.argv:raise ValueError('O comando deve executar explicitamente assertion_file.')
+                            text=test_file.read_text(encoding='utf-8',errors='replace')
+                            if not any(Path(target).stem in text or target in text for target in check.target_files):
+                                raise ValueError('O check deve exercitar os arquivos/nomes da unidade entregue, não outra task.')
+                            if 'assert True' in text or 'assert true' in text:raise ValueError('Assertivas constantes não verificam funcionalidade.')
+                        elif check.expected_stdout is None:
+                            raise ValueError('Declare assertion_file executável com assertivas ou expected_stdout para conferir resultado real.')
+                        elif not any(Path(target).stem in ' '.join(check.command.argv) or target in check.command.argv for target in check.target_files):
+                            raise ValueError('A execução com expected_stdout deve chamar a unidade entregue.')
+                verification=await self.invoke('reviewer','verification',{**self.code_context(key,workspace,feedback),
+                    'delivered_files':files,'scratch_directory':'.harness/checks','tools_directory':str(self.store.path('tools'))},VerificationSpec,workspace.root,validate_checks)
+                if await asyncio.to_thread(manifest,workspace.root)!=immutable:
+                    raise BuildError(f'{key}: o verificador G3 alterou código da aplicação para preparar os testes.')
+                if verification.dependencies:
+                    async with self.tools_lock:
+                        tools=self.store.path('tools');tools.mkdir(parents=True,exist_ok=True)
+                        await self.ensure_dependencies(verification.dependencies,tools)
+                workspace.freeze_checks()
+                self.store.json(f'tasks/{key}/verification.json',verification.model_dump())
+                for name,data in workspace.frozen_checks.items():
+                    target=self.store.path(f'checks/{key}/{name.removeprefix(".harness/checks/")}')
+                    target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
+            workspace.restore_checks()
+            await asyncio.to_thread(workspace.clear_bytecode)
+            failures=[]
+            for index,check in enumerate(verification.checks,1):
+                outcome=await run_command(check.command,workspace.root,self.store,
+                    f'log/{self.store.run_id}-{key}-g3-{p["attempts"]}-{index}',test=True)
+                if outcome['exit_code']!=0 or (check.expected_stdout is not None and outcome['stdout'].strip()!=check.expected_stdout.strip()):
+                    failures.append({'command':check.command.model_dump(),'exit_code':outcome['exit_code'],
+                        'expected_stdout':check.expected_stdout,
+                        'observed':(outcome['stderr']+'\n'+outcome['stdout'])[-6000:],
+                        'required_change':'Corrija a implementação para atender a verificação funcional congelada.',
+                        'acceptance':check.requirement_quote})
+            if await asyncio.to_thread(manifest,workspace.root)!=immutable:
+                raise BuildError(f'{key}: os testes modificaram a fonte da aplicação; nenhuma alteração será integrada.')
+            if failures:
+                feedback={'functional_failures':failures}
+                self.reject(key,3,feedback,workspace);before_failed=tree;await asyncio.sleep(0);continue
+            publishing=asyncio.create_task(self.accept_workspace(key,workspace,scope,p,verification,review,files,immutable))
+            try:await asyncio.shield(publishing)
+            except asyncio.CancelledError:
+                await publishing
+                raise
+            return
+
+    async def accept_workspace(self,key,workspace,scope,p,verification,review,files,tested_tree):
+        async with self.publish_lock:
+            current=await asyncio.to_thread(manifest,self.state.project_dir)
+            if current!=self.saved['accepted_tree']:
+                raise BuildError('Os arquivos do projeto mudaram fora da integração do harness. Os arquivos foram preservados.')
+            published,accepted=await asyncio.to_thread(workspace.publish,scope,tested_tree)
+            self.saved['accepted_tree']=accepted
+            self.gate(key,3,'completed')
+            p.update(completed=True,workspace=str(workspace.root),files=files,published=published)
+            self.store.json(f'tasks/{key}/approval.json',{'task_id':key,'gates':p['gates'],
+                'checks_executed':len(verification.checks),'attempts':p['attempts'],'files':files,
+                'fidelity_review':review.model_dump()})
+            self.checkpoint()
+
+    async def schedule(self):
+        pending={key for key in self.tasks if not self.progress[key]['completed']}
+        running={};limit=self.state.max_agents if self.state.build_mode=='parallel' else 1
+        limit=max(1,min(32,limit))
+        order={key:index for index,key in enumerate(self.tasks)}
+        try:
+            while pending or running:
+                for key in sorted(pending,key=order.get):
+                    if len(running)>=limit:break
+                    if any(not self.progress[d]['completed'] for d in self.dependencies(key)):continue
+                    if any(conflicts(self.scopes[key],self.scopes[active]) for active in running.values()):continue
+                    running[asyncio.create_task(self.task_run(key))]=key;pending.remove(key)
+                if not running:
+                    raise BuildError('Nenhuma task pode iniciar: verifique dependências e reservas do blueprint.')
+                done,_=await asyncio.wait(running,return_when=asyncio.FIRST_COMPLETED)
+                for future in done:
+                    running.pop(future)
+                    await future
+        finally:
+            for future in running:future.cancel()
+            if running:await asyncio.gather(*running,return_exceptions=True)
+
+    async def run(self):
+        if not self.state.writer or not self.state.reviewer:raise BuildError('Selecione escritor e revisor antes do build.')
+        if self.state.build_mode not in ('serial','parallel') or not 1<=self.state.max_agents<=32:
+            raise BuildError('Escolha modo serial/paralelo e máximo de 1 a 32 agentes.')
+        try:
+            self.source,self.saved=self.store.begin(self.state)
+            from .agents import CLIAgents
+            if isinstance(self.agents,CLIAgents):
+                absent=[]
+                for selection in (self.state.writer,self.state.reviewer):
+                    command=self.agents.commands.get(selection.provider,(selection.provider,))[0]
+                    if not shutil.which(command):absent.append(command)
+                if absent:
+                    self.store.json('control/missing-clis.json',{'programs':sorted(set(absent)),
+                        'instruction':'Instale e autentique os CLIs selecionados, ou configure build_agents no catálogo, e execute build novamente.'})
+                    raise DependenciesBlocked('CLIs selecionados não disponíveis: '+', '.join(sorted(set(absent)))+
+                        '. Instale/autentique os programas ou configure build_agents; detalhes em .harness/build/control/missing-clis.json.')
+            await self.prepare_environment()
+            self.announce('scheduling','Organizando dependências, arquivos e execução das tasks.')
+            await self.prepare_tasks()
+            await self.schedule()
+            if load_plan(self.state.project_dir)!=self.source:raise BuildError('O plan mudou durante o build; os arquivos da aplicação foram preservados.')
+            readme=self.state.project_dir/'README.md'
+            if not readme.is_file() or not readme.read_text(encoding='utf-8').strip():raise BuildError('README de instalação/execução não foi entregue.')
+            self.store.write('report.md',f'# Build concluído\n\nProjeto: {self.state.project_dir}\n\n'
+                f'{len(self.tasks)} tasks aprovadas nos gates G0–G3.\n\n'
+                'As verificações são funcionais por task, sem julgamento estético ou suíte global.\n\n'
+                'Consulte o README.md da aplicação para instalação, configuração e execução.\n')
+            self.announce('completed','Build concluído: aplicação e README entregues na raiz do projeto.')
+            self.store.finish('completed',tasks=len(self.tasks),report='build/report.md',
+                              files_sha256=digest(json.dumps(self.saved['accepted_tree'],sort_keys=True)))
+            return self.store.path('report.md')
+        except DependenciesBlocked as exc:
+            self.store.finish('blocked',reason=str(exc),recovery_script='build/install-manual.sh' if self.store.path('install-manual.sh').is_file() else None);raise
+        except asyncio.CancelledError:
+            self.store.finish('cancelled',reason='Build interrompido; tasks integradas foram preservadas para retomada.');raise
+        except Exception as exc:
+            self.store.finish('failed',reason=str(exc));raise
+        finally:
+            if self.store.started and self.progress:
+                for p in self.progress.values():p['gates']=['waiting' if g=='running' else g for g in p['gates']]
+                self.checkpoint()
+            self.store.close()

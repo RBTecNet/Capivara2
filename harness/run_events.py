@@ -13,6 +13,15 @@ class PlanItem:
 
 
 @dataclass(frozen=True)
+class BuildItem:
+    id: str
+    title: str
+    kind: str
+    gates: tuple[str, ...] = ("waiting",) * 4
+    status: str = "waiting"
+
+
+@dataclass(frozen=True)
 class InitEvent:
     kind: str
     stage: str
@@ -34,3 +43,11 @@ class InitEvent:
     items: tuple[PlanItem, ...] = ()
     contract_errors: int = 0
     writer_recoveries: int = 0
+    build_items: tuple[BuildItem, ...] = ()
+    active_agents: int = 0
+    max_agents: int = 1
+    packages_total: int = 0
+    packages_ready: int = 0
+    task_id: str | None = None
+    active_writers: int = 0
+    active_reviewers: int = 0

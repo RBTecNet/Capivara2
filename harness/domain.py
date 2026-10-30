@@ -73,6 +73,8 @@ class WizardState:
     reuse_reviewer: bool = True
     execute_requested: bool = False
     module: str = "init"
+    build_mode: str = "serial"
+    max_agents: int = 1
 
 
 def resolve_project(value: str, launch_dir: Path) -> Path:

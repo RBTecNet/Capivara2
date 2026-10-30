@@ -35,8 +35,8 @@ class Step(Screen):
             with Vertical(id="panel"):
                 breadcrumb = Text()
                 for index, label in enumerate(("Projeto", "Função", "Prompt", "Escritor", "Revisor", "Confirmar")):
-                    if self.wizard.state.module == "plan" and index == 2:
-                        label = "Prompt do init"
+                    if self.wizard.state.module in ("plan","build") and index == 2:
+                        label = "Plano" if self.wizard.state.module=="build" else "Prompt do init"
                     if index:
                         breadcrumb.append("  ›  ", style="dim")
                     breadcrumb.append(label, style="bold cyan" if index == self.section else "dim")

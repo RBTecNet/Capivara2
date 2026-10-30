@@ -119,12 +119,31 @@ class FilePromptStep(Step):
         self.wizard.show_providers("writer")
 
 
+class BuildAgentsStep(Step):
+    def __init__(self):
+        super().__init__("Máximo de agentes em paralelo", "Informe um número de 1 a 32. Reservas de arquivos podem reduzir a concorrência para evitar conflitos.", 3)
+
+    def fields(self):
+        yield Input(str(max(2,self.wizard.state.max_agents)),id="parallel-count",select_on_focus=True)
+
+    def on_input_submitted(self,event):
+        try:
+            value=int(event.value)
+            if not 1<=value<=32:raise ValueError()
+        except ValueError:
+            self.error("Informe um número inteiro de 1 a 32.");return
+        self.wizard.state.max_agents=value
+        self.wizard.show_reuse()
+
+
 class ConfirmStep(Step):
     def __init__(self) -> None:
         super().__init__("Executar agora?", "Confira a configuração para iniciar o módulo documental.", 5)
 
     def on_mount(self) -> None:
-        if self.wizard.state.module == "plan":
+        if self.wizard.state.module == "build":
+            self.query_one("#hint",Static).update("Build: prepara dependências e executa G0–G3 por task. A aplicação fica na raiz; execuções anteriores podem ser retomadas.")
+        elif self.wizard.state.module == "plan":
             self.query_one("#hint", Static).update("Plan documental: divide o prompt aprovado em tasks pequenas e revisa a fidelidade à origem. Reexecutar substitui somente o plan e invalida o build.")
         elif suggested_module(self.wizard.state.project_dir) != "init":
             self.query_one("#hint", Static).update("Executar o init novamente substitui os artefatos anteriores em .harness e reinicia o fluxo do projeto.")
@@ -134,7 +153,10 @@ class ConfirmStep(Step):
         yield Static(f"Projeto: {state.project_dir}", classes="summary", markup=False)
         source = f"Arquivo · {state.prompt_file}" if state.prompt_source == "file" else "Escrito manualmente"
         yield Static(f"Módulo: {state.module}", classes="summary", markup=False)
-        if state.module == "plan":
+        if state.module == "build":
+            source = "Plano aprovado · .harness/plan/final.md"
+            yield Static(f"Execução: {state.build_mode} · máximo {state.max_agents} agente(s)",classes="summary",markup=False)
+        elif state.module == "plan":
             source = "Prompt aprovado do init · .harness/prompts/final.md"
         if state.prompt_source == "mcp" and state.mcp_context:
             context = state.mcp_context
@@ -232,12 +254,13 @@ class HarnessApp(App[WizardState]):
 
     def __init__(self, *, launch_dir: Path | None = None, catalog: Catalog | None = None,
                  mcp_registry: MCPRegistry | None = None, mcp_service: MCPService | None = None,
-                 agents: CLIAgents | None = None) -> None:
+                 agents: CLIAgents | None = None, build_agents: CLIAgents | None = None) -> None:
         super().__init__()
         self.launch_dir = (launch_dir or Path.cwd()).resolve()
         self.state = WizardState(project_dir=self.launch_dir)
         self.catalog = catalog or Catalog.load()
         self.agents = agents or CLIAgents(self.catalog.commands)
+        self.build_agents = build_agents or CLIAgents(self.catalog.build_commands)
         self.mcp_registry = mcp_registry or MCPRegistry()
         self.mcp_service = mcp_service or MCPService()
         self.last_mcp_id: str | None = None
@@ -253,7 +276,7 @@ class HarnessApp(App[WizardState]):
             return
         self.push_screen(ChoiceStep("Qual função deseja executar?", "Use ↑ e ↓ para escolher; Enter para confirmar.", 1, "function", [
             ("init", "init", False), ("plan", "plan", selected == "init"),
-            ("build", "build · próxima etapa", selected != "build")], selected=selected))
+            ("build", "build", selected != "build")], selected=selected))
 
     def show_sources(self) -> None:
         self.push_screen(ChoiceStep("De onde vem o prompt do projeto?", "Escolha a origem do prompt.", 2, "source", [
@@ -271,21 +294,22 @@ class HarnessApp(App[WizardState]):
         if screen.kind == "function":
             if key == "init":
                 self.state.module = "init"
-                if self.state.prompt_source == "init":
+                if self.state.prompt_source in ("init", "plan"):
                     self.state.prompt_source = "manual"
                     self.state.prompt = ""
                 self.show_sources()
-            elif key == "plan":
+            elif key in ("plan","build"):
                 from .plan_artifacts import load_init
+                from .build_artifacts import load_plan
                 try:
-                    source = load_init(self.state.project_dir)
+                    source = load_init(self.state.project_dir) if key=="plan" else load_plan(self.state.project_dir)
                 except InitError as exc:
                     screen.error(str(exc))
                     return
-                self.state.module = "plan"
-                self.state.prompt_source = "init"
-                self.state.prompt = source["approved_prompt"]
-                self.state.prompt_file = self.state.project_dir / ".harness/prompts/final.md"
+                self.state.module = key
+                self.state.prompt_source = "init" if key=="plan" else "plan"
+                self.state.prompt_file = self.state.project_dir / (".harness/prompts/final.md" if key=="plan" else ".harness/plan/final.md")
+                self.state.prompt = self.state.prompt_file.read_text(encoding="utf-8")
                 self.state.mcp_context = None
                 self.show_providers("writer")
             else:
@@ -322,12 +346,20 @@ class HarnessApp(App[WizardState]):
             if screen.role == "writer":
                 self.state.writer = agent
                 self.state.reviewer = None
-                self.push_screen(ChoiceStep("Usar o mesmo modelo do escritor como revisor?",
-                                           "O revisor verificará se o conteúdo gerado atende ao pedido. Sim mantém também a IA e o effort.",
-                                           4, "reuse", [("yes", "Sim", False), ("no", "Não", False)]))
+                if self.state.module=="build":
+                    self.push_screen(ChoiceStep("Modo de execução do build", "Escolha execução serial ou paralela; o harness reserva os arquivos de cada task.",3,"build-mode",
+                        [("serial","Serial · um agente por vez",False),("parallel","Paralelo · múltiplos agentes",False)],selected=self.state.build_mode))
+                else:
+                    self.show_reuse()
             else:
                 self.state.reviewer = agent
                 self.push_screen(ConfirmStep())
+        elif screen.kind == "build-mode":
+            self.state.build_mode=key
+            if key=="parallel":self.push_screen(BuildAgentsStep())
+            else:
+                self.state.max_agents=1
+                self.show_reuse()
         elif screen.kind == "reuse":
             self.state.reuse_reviewer = key == "yes"
             if key == "yes":
@@ -336,6 +368,11 @@ class HarnessApp(App[WizardState]):
             else:
                 self.state.reviewer = None
                 self.show_providers("reviewer")
+
+    def show_reuse(self):
+        self.push_screen(ChoiceStep("Usar o mesmo modelo do escritor como revisor?",
+            "O revisor verificará se a entrega atende ao pedido. Sim mantém também a IA e o effort.",
+            4,"reuse",[("yes","Sim",False),("no","Não",False)]))
 
     async def action_quit(self) -> None:
         self.workers.cancel_all()
