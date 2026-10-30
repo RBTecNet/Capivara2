@@ -43,6 +43,30 @@ def plan_completed(project_dir: Path, source_hash: str) -> bool:
         plan = FinalPlan.model_validate(store.read_json("final.json"))
         markdown = store.path("final.md").read_text(encoding="utf-8")
         approval = store.read_json("control/approval.json")
+        if plan.contract_version >= 2:
+            from .plan_contracts import AcceptanceCondition, ClassificationReview, ContractValidation
+            classification = store.read_json("control/classification-approval.json")
+            if ClassificationReview.model_validate(classification["review"]).status == "conflict":
+                return False
+            classification_hash = digest(store.path("control/classification.json").read_text(encoding="utf-8"))
+            registry_hash = digest(json.dumps({r.id: r.model_dump() for r in plan.requirements}, sort_keys=True, ensure_ascii=False))
+            if (not classification.get("approved") or classification.get("source_prompt_sha256") != source_hash
+                    or classification.get("classification_sha256") != classification_hash
+                    or approval.get("classification_sha256") != classification_hash
+                    or approval.get("completion_sha256") != digest(store.path("control/completion-certificate.json").read_text(encoding="utf-8"))
+                    or not ContractValidation.model_validate(store.read_json("control/completion-certificate.json")).approved
+                    or classification.get("requirements_sha256") != registry_hash
+                    or approval.get("corrections_sha256") != digest(store.path("control/corrections.json").read_text(encoding="utf-8"))):
+                return False
+            tasks = {t.id: t for p in plan.phases for t in p.tasks}
+            for record in store.read_json("control/corrections.json")["contracts"]:
+                if record["status"] == "retired":
+                    continue
+                if record["status"] != "verified" or record["task_id"] not in tasks:
+                    return False
+                if any(not AcceptanceCondition.model_validate(c).satisfied(tasks[record["task_id"]].content)
+                       for c in record["acceptance"]):
+                    return False
         if plan.requirements:
             from .plan_control import version
             from .plan_coverage import check_assignments
@@ -57,7 +81,7 @@ def plan_completed(project_dir: Path, source_hash: str) -> bool:
                 and PlanReview.model_validate(approval["review"]).approved
                 and set(approval["approved_phases"]) == {phase.number for phase in plan.phases}
                 and set(approval["approved_tasks"]) == {task.id for phase in plan.phases for task in phase.tasks})
-    except (OSError, ValueError, TypeError, KeyError):
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
         return False
 
 

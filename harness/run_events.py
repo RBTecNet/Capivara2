@@ -32,3 +32,5 @@ class InitEvent:
     tasks_total: int = 0
     tasks_approved: int = 0
     items: tuple[PlanItem, ...] = ()
+    contract_errors: int = 0
+    writer_recoveries: int = 0

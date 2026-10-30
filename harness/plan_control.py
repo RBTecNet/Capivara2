@@ -4,12 +4,20 @@ from collections import Counter
 import json
 
 from .artifacts import digest
+from .plan_contracts import PlanContractError
 from .plan_coverage import check_assignments, check_seed, requests_structural_operation
 from .plan_models import PlannedTask, TaskContent
 
 
 def version(task):
     return digest(json.dumps(task.model_dump(), ensure_ascii=False, sort_keys=True))
+
+
+def structure_version(phase):
+    shape = sorted(((' '.join(t.seed.scope.casefold().split())),
+                    sorted((c.requirement_id, ' '.join(c.excerpt.casefold().split())) for c in t.seed.coverage))
+                   for t in phase.tasks)
+    return digest(json.dumps((phase.number, shape), sort_keys=True))
 
 
 def stub(number, seed, identifier):
@@ -129,13 +137,17 @@ class IssueLedger:
         return {'issues': [{**{k: v for k, v in issue.items() if k != 'evidence'},
                            'recent_evidence': issue['evidence'][-3:]}
                           for issue in self.issues.values() if issue['task_id'] in task_ids],
-                'decisions': [d for d in self.decisions if d['task_id'] in task_ids][-12:]}
+                'decisions': list({d['issue_id']: d for d in self.decisions if d['task_id'] in task_ids}.values())}
 
     def decide(self, decision):
         issue = self.issues[decision.issue_id]
         if issue['task_id'] != decision.task_id:
             raise ValueError('A decisão deve pertencer à pendência e task indicadas.')
-        self.decisions.append(decision.model_dump())
+        existing = next((d for d in self.decisions if d['issue_id'] == decision.issue_id), None)
+        if existing and existing['decision'] != decision.decision:
+            raise PlanContractError('Uma decisão vigente não pode ser substituída silenciosamente. O conflito de escopo exige diagnóstico.')
+        if not existing:
+            self.decisions.append(decision.model_dump())
         self.rejections[decision.task_id] = 0
         issue['status'] = 'reassessed'
 

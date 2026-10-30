@@ -6,12 +6,17 @@ import re
 
 from .artifacts import InitError, digest
 from .plan_artifacts import PlanStore, load_init
-from .plan_control import IssueLedger, prepare_changes, stub, version
+from .plan_control import IssueLedger, prepare_changes, stub, version, structure_version
+from .plan_classification import source_activities, check_classification, classified_requirements
+from .plan_corrections import CorrectionBook
+from .plan_schema import scoped_schema
+from .plan_contracts import (PlanContractError, WorkClassification, ClassificationReview,
+    TaskAssessment, CollectiveAssessment, StructureRepair, ContentCorrection, ContractValidation,
+    SealedOutline)
 from .plan_coverage import (build_requirements, check_assignments, check_seed,
-                            coverage_map, delegate_validations, requests_structural_operation)
-from .plan_instructions import REVIEWER, WRITER
-from .plan_models import (FinalPlan, PhaseOutline, PlannedPhase, PlannedTask,
-                          PlanRepair, PlanReview, TaskContent, TaskSeed, agent_schema)
+                            coverage_map, delegate_validations)
+from .plan_instructions import instructions_for
+from .plan_models import (FinalPlan, PlannedPhase, PlanRepair, PlanReview, TaskContent, agent_schema)
 from .run_events import InitEvent, PlanItem
 
 
@@ -39,6 +44,12 @@ class PlanEngine:
         self.approved_versions = {}
         self.pending_feedback = {}
         self.repair_id = 0
+        self.correction_book = CorrectionBook()
+        self.contract_errors = 0
+        self.writer_recoveries = 0
+        self.current_task_id = None
+        self.structure_requests = set()
+        self.applied_structures = set()
 
     def item_state(self, item_id, **states):
         self.item_states.setdefault(item_id, {}).update(states)
@@ -69,7 +80,8 @@ class PlanEngine:
                 phase_number=self.phase_number, phases_total=len(self.origins),
                 phases_approved=len(self.approved_phases),
                 tasks_total=sum(len(phase.tasks) for phase in self.phases),
-                tasks_approved=len(self.approved_tasks), items=self.items()))
+                tasks_approved=len(self.approved_tasks), items=self.items(), contract_errors=self.contract_errors,
+                writer_recoveries=self.writer_recoveries))
 
     def announce(self, stage, message):
         self.stage = stage
@@ -78,18 +90,20 @@ class PlanEngine:
         self.store.event(stage, message, phase=self.phase_number, round=self.round)
         self.emit("stage_changed")
 
-    async def call(self, role, task, data, model, check=None):
+    async def call(self, role, task, data, model, check=None, *, max_attempts=2):
         self.operations += 1
         feedback = ""
+        rejected_response = None
         selection = self.state.reviewer if role == "reviewer" else self.state.writer
-        schema = agent_schema(model)
-        while True:
+        schema = scoped_schema(model, task, data, self.requirements)
+        for attempt in range(max_attempts):
             self.call_id += 1
             # Nenhum histórico é reutilizado, nem em correções de formato.
             envelope = {"preserved_context": [], "context_policy": "fresh",
-                        "current_request": {"task": task, "data": data}, "format_correction": feedback}
+                        "current_request": {"task": task, "data": data}, "format_correction": feedback,
+                        "rejected_response": rejected_response}
             self.store.json(f"context/call-{self.call_id:04d}.json", envelope)
-            prompt = (REVIEWER if role == "reviewer" else WRITER) + "\n\nSCHEMA JSON:\n" + json.dumps(schema, ensure_ascii=False)
+            prompt = instructions_for(role, task) + "\n\nSCHEMA JSON:\n" + json.dumps(schema, ensure_ascii=False)
             prompt += "\n\nREQUEST:\n" + json.dumps(envelope, ensure_ascii=False)
             self.active_role = self.last_role = role
             self.emit("agent_started")
@@ -114,12 +128,51 @@ class PlanEngine:
                 if check:
                     check(value)
                 return value
+            except PlanContractError:
+                raise
             except ValueError as exc:
                 feedback = str(exc)
-                self.corrections += 1
+                rejected_response = output
+                self.contract_errors += 1
                 self.store.event("format_correction", "Contrato documental devolvido ao agente.",
                                  role=role, call=self.call_id, detail=feedback)
                 self.emit("format_correction")
+                if attempt + 1 == max_attempts:
+                    raise PlanContractError(f"{task}: resposta ainda inválida após uma oportunidade de corrigir o contrato. {feedback}") from exc
+
+    async def classify(self):
+        raw = build_requirements(self.source["document"])
+        self.announce("classifying", "Classificando responsabilidades uma vez, com partição literal da origem.")
+        data = {"source": self.source, "activities": [{"source_id": r.id, "phase_number": r.phase_number, "text": r.text}
+                                                        for r in source_activities(raw)]}
+        classification = await self.call("reviewer", "classify_work", data, WorkClassification,
+                                         lambda c: check_classification(c, raw))
+        self.announce("reviewing_classification", "Conferindo e aprovando o mapa final de responsabilidades.")
+        def apply_roles(verdict, proposal):
+            entries = {a.source_id: a for a in proposal.activities}
+            seen = set()
+            for change in verdict.corrections:
+                key = (change.source_id, change.part_index)
+                if change.source_id not in entries or change.part_index >= len(entries[change.source_id].parts) or key in seen:
+                    raise ValueError("Aponte source_id e part_index existentes, sem duplicar mudanças.")
+                seen.add(key)
+                part = entries[change.source_id].parts[change.part_index]
+                part.responsibility, part.reason = change.responsibility, change.reason
+            return proposal
+        verdict = await self.call("reviewer", "review_classification", {**data,
+            "classification": classification.model_dump(), "literal_partition_verified": True}, ClassificationReview,
+            lambda v: apply_roles(v, classification.model_copy(deep=True)))
+        self.store.json("control/classification-review.json", verdict.model_dump())
+        if verdict.status == "conflict":
+            raise PlanContractError(f"O revisor não aprovou o mapa de responsabilidades. {verdict.summary}")
+        classification = apply_roles(verdict, classification)
+        self.requirements = classified_requirements(classification, raw)
+        self.store.json("control/classification.json", classification.model_dump())
+        self.store.json("control/classification-approval.json", {"source_prompt_sha256": self.source["source_prompt_sha256"],
+            "classification_sha256": digest(self.store.path("control/classification.json").read_text()),
+            "requirements_sha256": digest(json.dumps({k: v.model_dump() for k, v in self.requirements.items()}, sort_keys=True, ensure_ascii=False)),
+            "approved": True, "review": verdict.model_dump()})
+        self.correction_book = CorrectionBook(self.source["source_prompt_sha256"])
 
     def prepare_origins(self):
         document = self.source["document"]
@@ -143,30 +196,44 @@ class PlanEngine:
             "phases": [phase.model_dump() for phase in self.phases]})
         self.store.json("control/coverage.json", coverage_map(self.phases, self.requirements))
         self.store.json("control/issues.json", self.ledger.dump())
+        self.store.json("control/corrections.json", self.correction_book.dump())
         self.emit("counts_changed")
 
     def task_context(self, phase, task):
         assigned = {claim.requirement_id for claim in task.seed.coverage}
         return {"objective": self.source["document"]["objective"],
             "constraints": self.source["document"]["constraints"],
+            "product_requirements": [{"requirement_id": r.id, "text": r.text} for r in self.requirements.values()
+                                     if r.phase_number == -1],
             "assigned_requirements": [self.requirements[key].model_dump() for key in sorted(assigned)],
             "scope_decisions": self.ledger.context({task.id}),
+            "correction_contracts": self.correction_book.context({task.id}),
+            "base_version": version(task),
             "technology": {"stack": self.source["document"]["stack"],
                            "tools": self.source["document"]["tools"]} if phase.number else {}}
 
     def review_data(self, phase=None, task=None):
+        def view(item):
+            document = item.model_dump()
+            document["seed"].pop("source_quotes", None)
+            return document
         if task is not None:
             data = self.task_context(phase, task)
-            data["task"] = task.model_dump()
+            data["task"] = view(task)
             ids = {claim.requirement_id for claim in task.seed.coverage}
             data["responsibility_map"] = [entry for entry in coverage_map([phase], self.requirements)
                                            if entry["requirement"]["id"] in ids]
             return data
         phases = [phase] if phase else self.phases
         data = {"source": self.source, "coverage_map": coverage_map(phases, self.requirements),
-                "scope_decisions": self.ledger.context({t.id for p in phases for t in p.tasks})}
+                "scope_decisions": self.ledger.context({t.id for p in phases for t in p.tasks}),
+                "approved_versions": self.approved_versions,
+                "correction_contracts": self.correction_book.context({t.id for p in phases for t in p.tasks})}
         if phase is not None:
-            data.update(phase_source=self.origins[phase.number], phase=phase.model_dump())
+            phase_view = phase.model_dump()
+            phase_view["tasks"] = [view(t) for t in phase.tasks]
+            data.update(phase_source=self.origins[phase.number], phase=phase_view)
+            data["document_boundary"] = "Avalie SOMENTE tasks[].content como trabalho gerado. source, phase_source e requisitos build são referências da origem, nunca instruções novas das tasks."
             data["review_boundary"] = ("Somente catálogo de tecnologias e ferramentas; finalidades não são execução de QA."
                                        if phase.number == 0 else
                                        "Cobertura coletiva somente desta fase. Respeitar delegações ao build e tarefas das outras fases.")
@@ -191,72 +258,133 @@ class PlanEngine:
         return (*prepare_changes(self.phases, value, requirements, self.origins, self.task_sequences), requirements)
 
     async def review(self, scope, phase=None, task=None):
-        phases = [phase] if phase is not None else self.phases
+        if scope not in ("task", "phase"):
+            raise PlanContractError("A conclusão consolida aprovações; não existe reabertura livre do plano completo.")
+        phases = [phase] if phase else self.phases
         def check(value):
+            available = {t.id: t for p in phases for t in p.tasks}
             if task is not None:
-                if value.additions or value.structural_changes or value.delegations:
-                    raise ValueError("Na revisão individual, solicite reavaliação com category=structure; operações são coletivas.")
-                for correction in value.corrections:
-                    if correction.task_id != task.id:
-                        raise ValueError("Corrija somente a task em revisão.")
-                    if requests_structural_operation(correction.instruction):
-                        raise ValueError("Solicite reavaliação com category=structure; remoção não é trabalho do escritor.")
-                    if correction.replacement_seed:
-                        self.check_seed(correction.replacement_seed, phase.number)
-            elif not value.approved:
-                self.check_repair(value, phases)
-        verdict = await self.call("reviewer", f"review_{scope}", self.review_data(phase, task), PlanReview, check)
+                available = {task.id: task}
+                if value.replan:
+                    if value.replan.task_id != task.id:
+                        raise ValueError("A reavaliação deve apontar a única task em revisão.")
+                    for evidence in value.replan.evidence:
+                        ids = {c.requirement_id for c in task.seed.coverage}
+                        if evidence.requirement_id not in ids or evidence.quote not in self.requirements[evidence.requirement_id].text:
+                            raise ValueError("Cite literalmente uma responsabilidade atribuída à task.")
+            for spec in value.corrections:
+                if spec.task_id not in available:
+                    raise ValueError("A correção deve apontar uma task deste recorte.")
+                self.correction_book.check(available[spec.task_id], spec, self.requirements)
+            if task is None and not value.approved:
+                self.check_repair(value.legacy(structural_changes=value.structural_changes, additions=value.additions), phases)
+        model = TaskAssessment if task else CollectiveAssessment
+        value = await self.call("reviewer", f"review_{scope}", self.review_data(phase, task), model, check)
+        if task and value.replan:
+            from .plan_models import TaskCorrection
+            concern = value.replan
+            correction = TaskCorrection(task_id=task.id, reason=concern.reason,
+                instruction="Resolver a estrutura antes da redação, com operação concreta.", replacement_seed=None, category="structure")
+            verdict = PlanReview(**value.model_dump(exclude={"replan", "corrections"}), corrections=[correction], additions=[])
+        elif task:
+            verdict = value.legacy(additions=[])
+        else:
+            verdict = value.legacy(structural_changes=value.structural_changes, additions=value.additions)
         self.review_id += 1
         self.store.json(f"control/reviews/{self.review_id:04d}.json", {"scope": scope,
             "phase": phase.number if phase else None, "task_id": task.id if task else None,
             "review": verdict.model_dump()})
         return verdict
 
+    async def correct(self, phase, task, correction):
+        if not correction.contract:
+            raise PlanContractError(f"{task.id}: devolução sem evidência, alterações e condições de aceite verificáveis.")
+        spec = ContentCorrection.model_validate(correction.contract)
+        target = self.correction_book.check(task, spec, self.requirements)
+        context = self.task_context(phase, task)
+        for cycle in range(2):
+            validation = await self.call("reviewer", "validate_correction", {**context,
+                "task": task.model_dump(), "contract": spec.model_dump(), "expected_content": target.model_dump()}, ContractValidation)
+            if validation.approved:
+                break
+            if cycle:
+                raise PlanContractError(f"{task.id}: o revisor não produziu um contrato de correção coerente. {validation.reason}")
+            spec = await self.call("reviewer", "repair_correction", {**context, "task": task.model_dump(),
+                "rejected_contract": spec.model_dump(), "reason": validation.reason}, ContentCorrection,
+                lambda c: self.correction_book.check(task, c, self.requirements))
+            target = self.correction_book.check(task, spec, self.requirements)
+        identifier, target = self.correction_book.issue(task, spec, self.requirements)
+        self.checkpoint()
+        self.announce("correcting_task", f"Escritor aplicando o contrato {identifier} de {task.id}, em um ciclo.")
+        self.item_state(task.id, creation="running", validation="rejected")
+        recovered = False
+        try:
+            candidate = await self.call("writer", "correct_task", {**context, "task_id": task.id,
+                "seed": task.seed.model_dump(), "previous_task": task.content.model_dump(),
+                "contract_id": identifier, "correction": spec.model_dump()}, TaskContent, max_attempts=1)
+            recovered = candidate != target
+        except PlanContractError:
+            recovered = True
+        # A correção autorizada é um patch exato. Desvios do escritor não geram nova tentativa.
+        task.content = target
+        self.correction_book.applied(identifier, task, recovered)
+        if recovered:
+            self.writer_recoveries += 1
+            self.store.event("writer_contract_recovery", "Substituições aprovadas aplicadas exatamente após desvio do escritor.",
+                             task_id=task.id, contract_id=identifier)
+            self.emit("writer_recovered")
+        self.created_tasks.add(task.id)
+        self.store.json(f"phases/{phase.number:02d}/tasks/{task.id}.json", task.model_dump())
+        self.item_state(task.id, creation="completed", validation="waiting")
+        self.checkpoint()
+
     async def write_task(self, phase, task):
+        self.current_task_id = task.id
         correction = self.pending_feedback.pop(task.id, None)
-        must_write = task.id not in self.created_tasks or correction is not None
         self.approved_tasks.discard(task.id)
         self.approved_phases.discard(phase.number)
+        if correction:
+            from .plan_models import TaskCorrection
+            await self.correct(phase, task, TaskCorrection.model_validate(correction))
+        elif task.id not in self.created_tasks:
+            self.item_state(task.id, creation="running")
+            self.announce("writing_task", f"Escritor redigindo {task.id} com contexto novo.")
+            task.content = await self.call("writer", "write_task", {**self.task_context(phase, task),
+                "task_id": task.id, "phase_number": phase.number, "phase_title": phase.title,
+                "seed": task.seed.model_dump(), "previous_task": None, "correction": None}, TaskContent)
+            self.created_tasks.add(task.id)
+            self.store.json(f"phases/{phase.number:02d}/tasks/{task.id}.json", task.model_dump())
         while True:
-            if correction and correction.get("replacement_seed") is not None:
-                old = task.seed
-                task.seed = TaskSeed.model_validate(correction["replacement_seed"])
-                try:
-                    check_assignments(self.phases, self.requirements)
-                except ValueError:
-                    task.seed = old
-                    return False
-            if must_write:
-                self.item_state(task.id, creation="running")
-                self.announce("writing_task", f"Escritor redigindo {task.id} com contexto novo.")
-                data = {**self.task_context(phase, task), "task_id": task.id,
-                    "phase_number": phase.number, "phase_title": phase.title, "seed": task.seed.model_dump(),
-                    "previous_task": task.content.model_dump() if correction else None, "correction": correction}
-                task.content = await self.call("writer", "write_task", data, TaskContent)
-                self.created_tasks.add(task.id)
-                self.store.json(f"phases/{phase.number:02d}/tasks/{task.id}.json", task.model_dump())
+            self.correction_book.verify(task)
             self.item_state(task.id, creation="completed", validation="running")
-            self.announce("reviewing_task", f"Revisor comparando apenas o recorte de {task.id}.")
+            self.announce("reviewing_task", f"Revisor verificando {task.id} e as condições de aceite vigentes.")
             verdict = await self.review("task", phase, task)
             if verdict.approved:
+                self.correction_book.verify(task, approved=True)
                 self.approved_tasks.add(task.id)
                 self.approved_versions[task.id] = version(task)
                 self.ledger.resolved(task)
                 self.item_state(task.id, validation="completed")
                 self.checkpoint()
+                self.current_task_id = None
                 return True
-            self.item_state(task.id, validation="rejected")
+            correction = verdict.corrections[0]
+            self.ledger.record(task, correction)
             self.round += 1
-            correction = verdict.corrections[0].model_dump()
-            self.ledger.record(task, verdict.corrections[0])
+            self.item_state(task.id, validation="rejected")
+            self.announce("revision_requested", f"Correção específica solicitada para {task.id}.")
             self.checkpoint()
-            self.announce("revision_requested", f"Correção documental solicitada para {task.id}.")
-            if self.ledger.stalled(task) or verdict.corrections[0].category in ("structure", "granularity"):
+            if correction.category == "structure":
                 return False
-            must_write = True
+            await self.correct(phase, task, correction)
 
     def apply(self, verdict):
         result, sequences, dirty, affected, removed, feedback, requirements = self.check_repair(verdict, self.phases)
+        if verdict.structural_changes or verdict.additions:
+            for phase in result:
+                if phase.number in affected and structure_version(phase) in self.applied_structures:
+                    raise PlanContractError(f"Fase {phase.number}: a estrutura proposta repete uma versão já examinada; não haverá novo ciclo de divisão/consolidação.")
+            self.applied_structures.update(structure_version(p) for p in result if p.number in affected)
         retired = {task.id: task.model_dump() for phase in self.phases for task in phase.tasks if task.id in removed}
         # O lote inteiro já foi validado; nenhuma chamada ao escritor ocorreu até aqui.
         self.phases, self.task_sequences = result, sequences
@@ -266,6 +394,7 @@ class PlanEngine:
         self.pending_feedback.update(feedback)
         self.approved_tasks.difference_update(dirty | removed)
         self.created_tasks.difference_update(removed)
+        self.correction_book.retire(removed)
         for identifier in dirty | removed:
             self.approved_versions.pop(identifier, None)
         for identifier, document in retired.items():
@@ -295,7 +424,15 @@ class PlanEngine:
                 issue = self.ledger.issues.get(decision.issue_id)
                 if not issue or issue["task_id"] != decision.task_id or decision.task_id not in {t.id for t in phase.tasks}:
                     raise ValueError("Decisões devem apontar pendências existentes desta fase.")
-        repair = await self.call("reviewer", "reassess_phase", data, PlanRepair, check)
+        fingerprint = structure_version(phase)
+        if fingerprint in self.structure_requests:
+            raise PlanContractError(f"Fase {phase.number}: a mesma estrutura foi questionada novamente sem alteração. Revisões incompatíveis.")
+        self.structure_requests.add(fingerprint)
+        dto = await self.call("reviewer", "reassess_phase", data, StructureRepair,
+            lambda v: check(PlanRepair(summary=v.summary, decisions=v.decisions, corrections=[],
+                                      additions=v.additions, structural_changes=v.structural_changes)))
+        repair = PlanRepair(summary=dto.summary, decisions=dto.decisions, corrections=[],
+                            additions=dto.additions, structural_changes=dto.structural_changes)
         for decision in repair.decisions:
             self.ledger.decide(decision)
         self.apply(repair)
@@ -332,10 +469,7 @@ class PlanEngine:
                 self.ledger.record(task, correction)
             self.item_state(f"P{number}", validation="rejected")
             self.announce("revision_requested", f"Revisor devolveu recortes da fase {number}.")
-            if self.ledger.repeated_phase(number, verdict):
-                await self.reassess(phase)
-            else:
-                self.apply(verdict)
+            self.apply(verdict)
 
     async def run(self):
         if not self.state.writer or not self.state.reviewer:
@@ -343,7 +477,7 @@ class PlanEngine:
         try:
             self.source = self.store.begin(self.state)
             self.prepare_origins()
-            self.requirements = build_requirements(self.source["document"])
+            await self.classify()
             self.store.json("control/requirements.json", [r.model_dump() for r in self.requirements.values()])
             self.round = 1
             for number, origin in self.origins.items():
@@ -352,7 +486,7 @@ class PlanEngine:
                 self.announce("decomposing", f"Decompondo a fase {number} em recortes pequenos.")
 
                 def check(outline):
-                    requirements = delegate_validations(self.requirements, outline.delegations, number)
+                    requirements = self.requirements
                     for seed in outline.tasks:
                         check_seed(seed, number, origin["text"], requirements)
                     proposal = PlannedPhase(**{key: origin[key] for key in ("number", "title", "goal", "depends_on")},
@@ -361,62 +495,65 @@ class PlanEngine:
 
                 outline = await self.call("reviewer", "outline_phase", {
                     "source": self.source, "phase_source": origin,
-                    "requirements": [r.model_dump() for r in self.requirements.values() if r.phase_number == number]}, PhaseOutline, check)
-                self.requirements = delegate_validations(self.requirements, outline.delegations, number)
+                    "requirements": [r.model_dump() for r in self.requirements.values() if r.phase_number == number]}, SealedOutline, check)
                 self.store.json("control/requirements.json", [r.model_dump() for r in self.requirements.values()])
                 self.store.json(f"phases/{number:02d}/outline.json", outline.model_dump())
                 phase = PlannedPhase(**{key: origin[key] for key in ("number", "title", "goal", "depends_on")},
                     tasks=[stub(number, seed, f"P{number}-T{i:03d}") for i, seed in enumerate(outline.tasks, 1)])
                 self.phases.append(phase)
+                self.applied_structures.add(structure_version(phase))
                 self.task_sequences[number] = len(phase.tasks)
                 self.item_state(f"P{number}", creation="completed")
                 self.checkpoint()
                 await self.validate_phase(phase)
-            while True:
-                self.phase_number = None
-                self.announce("reviewing_plan", "Comparando o plano completo com os documentos originais.")
-                verdict = await self.review("plan")
-                if verdict.approved:
-                    break
-                self.round += 1
-                self.announce("revision_requested", "Revisor apontou correções pontuais no plano.")
-                for correction in verdict.corrections:
-                    task = next(t for p in self.phases for t in p.tasks if t.id == correction.task_id)
-                    self.ledger.record(task, correction)
-                if self.ledger.repeated_phase(-1, verdict):
-                    affected = {next(p.number for p in self.phases if any(t.id == c.task_id for t in p.tasks))
-                                for c in verdict.corrections}
-                    affected.update(a.phase_number for a in verdict.additions)
-                    affected.update(self.requirements[d.requirement_id].phase_number for d in verdict.delegations)
-                    affected.update(next(p.number for p in self.phases if any(t.id == change.task_ids[0] for t in p.tasks))
-                                    for change in verdict.structural_changes)
-                    for phase in list(self.phases):
-                        if phase.number in affected:
-                            self.phase_number = phase.number
-                            await self.reassess(phase)
-                else:
-                    affected = self.apply(verdict)
-                for phase in self.phases:
-                    if phase.number in affected:
-                        await self.validate_phase(phase)
             # Detectar edição externa do init antes de liberar o build.
             if load_init(self.state.project_dir) != self.source:
                 raise InitError("Os documentos do init mudaram durante o plan. Execute o plan novamente.")
             plan = FinalPlan(title=f"Plano de implementação — {self.source['document']['title']}",
                 objective=self.source["document"]["objective"], source_prompt_sha256=self.source["source_prompt_sha256"],
-                phases=self.phases, requirements=list(self.requirements.values()))
+                phases=self.phases, requirements=list(self.requirements.values()), contract_version=2)
             if len(self.approved_phases) != len(self.origins) or len(self.approved_tasks) != sum(len(p.tasks) for p in self.phases):
                 raise InitError("Existem tasks ou fases sem aprovação documental.")
             check_assignments(self.phases, self.requirements)
             if any(self.approved_versions.get(t.id) != version(t) for p in self.phases for t in p.tasks):
                 raise InitError("Uma versão de task mudou após sua aprovação.")
+            for phase in self.phases:
+                if self.store.read_json(f"phases/{phase.number:02d}/approved.json") != phase.model_dump():
+                    raise PlanContractError(f"Fase {phase.number}: o documento mudou após a aprovação coletiva.")
+                for task in phase.tasks:
+                    self.correction_book.verify(task)
+            self.phase_number = None
+            self.announce("reviewing_plan", "Conferindo a conclusão: aprovações explícitas, versões e cobertura integral.")
+            certificate = await self.call("reviewer", "validate_completion", {
+                "source_prompt_sha256": self.source["source_prompt_sha256"],
+                "objective": self.source["document"]["objective"],
+                "product_requirements": self.source["document"]["requirements"],
+                "classification_approved": True,
+                "coverage": coverage_map(self.phases, self.requirements),
+                "phases": [{"number": p.number, "title": p.title, "goal": p.goal, "depends_on": p.depends_on,
+                    "approved": p.number in self.approved_phases,
+                    "tasks": [{"id": t.id, "title": t.content.title, "approved": t.id in self.approved_tasks,
+                               "approved_version": self.approved_versions[t.id]} for t in p.tasks]} for p in self.phases],
+                "local_checks": {"source_unchanged": True, "all_versions_match": True,
+                                 "all_phase_documents_match": True, "all_acceptance_conditions_hold": True},
+                "testing_policy": "Build decide livremente todos os testes, inclusive não citados na origem."}, ContractValidation)
+            self.store.json("control/completion-certificate.json", certificate.model_dump())
+            if not certificate.approved:
+                raise PlanContractError(f"A conferência final recusou a conclusão: {certificate.reason}")
+            if load_init(self.state.project_dir) != self.source:
+                raise InitError("Os documentos do init mudaram durante a conferência final. Execute o plan novamente.")
+            verdict = PlanReview(approved=True, matches_source=True, coverage_complete=True,
+                tasks_are_small=True, no_test_strategy=True, summary=certificate.reason, corrections=[], additions=[])
             markdown = plan.render()
             self.store.write("final.md", markdown)
             self.store.json("final.json", plan.model_dump())
             self.store.json("control/approval.json", {"plan_sha256": digest(markdown),
                 "source_prompt_sha256": self.source["source_prompt_sha256"], "review": verdict.model_dump(),
                 "approved_tasks": sorted(self.approved_tasks), "approved_phases": sorted(self.approved_phases),
-                "approved_versions": self.approved_versions})
+                "approved_versions": self.approved_versions,
+                "classification_sha256": digest(self.store.path("control/classification.json").read_text()),
+                "completion_sha256": digest(self.store.path("control/completion-certificate.json").read_text()),
+                "corrections_sha256": digest(self.store.path("control/corrections.json").read_text())})
             self.announce("completed", "Plan concluído: tasks, fases e plano aprovados.")
             self.store.finish("completed", plan_sha256=digest(markdown),
                 plan_json_sha256=digest(self.store.path("final.json").read_text(encoding="utf-8")),
@@ -428,6 +565,13 @@ class PlanEngine:
             self.store.finish("cancelled", reason="Execução interrompida pelo usuário.")
             raise
         except Exception as exc:
+            if isinstance(exc, PlanContractError) and self.store.started:
+                self.store.json("control/contract-failure.json", {"operation": self.stage, "task_id": self.current_task_id,
+                    "phase": self.phase_number, "call": self.call_id, "reason": str(exc),
+                    "instruction": "Corrigir a incompatibilidade do contrato; nenhuma aprovação será inferida por tentativas."})
+                self.stage = "contract_conflict"
+                if self.current_task_id:
+                    self.item_state(self.current_task_id, validation="rejected")
             self.park_items()
             self.store.finish("failed", reason=str(exc))
             raise

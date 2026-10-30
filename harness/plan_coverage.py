@@ -9,42 +9,15 @@ def normalized(text):
     return ' '.join(text.casefold().split())
 
 
-def is_build_validation(text):
-    """Distingue QA explícito de validação funcional e preparação de infraestrutura."""
-    return bool(re.match(
-        r'^(?:(?:criar|escrever) testes\b|executar (?:verifica|teste|fluxo)|'
-        r'(?:testar|demonstrar)\b|verificar (?:o |a |os |as )?(?:funcionamento|fluxos?|persistência|'
-        r'continuidade|teclado|interface|integração|requisitos|contratos|comportamento)\b|'
-        r'validar (?:os? )?(?:totais|fluxos|resultados)\b|'
-        r'revisar (?:a )?interface\b|registrar (?:os? )?resultados\b)', normalized(text)))
-
-
 def delegate_validations(requirements, delegations, number):
-    result = {key: value.model_copy(deep=True) for key, value in requirements.items()}
-    seen = set()
-    for delegation in delegations:
-        item = result.get(delegation.requirement_id)
-        if number == 0:
-            raise ValueError('A fase 0 cataloga stack e dependências. Finalidades de Vitest/Supertest/Playwright '
-                             'descrevem para que servem as ferramentas, não mandam executar testes. '
-                             'Mantenha sua identificação documental nas tasks; P0 não permite delegações de QA.')
-        if (item is None or item.phase_number != number or item.kind != 'activity'
-                or item.id in seen or not is_build_validation(item.text)):
-            eligible = [r.id for r in result.values() if r.phase_number == number and r.kind == 'activity'
-                        and is_build_validation(r.text)]
-            raise ValueError(f'Delegação inválida: {delegation.requirement_id} '
-                             f'(kind={item.kind if item else "inexistente"}). '
-                             'Delegue apenas atividades explícitas de QA; nunca implementação, validação de campos '
-                             'ou preparação da infraestrutura. Entregáveis/critérios/objetivos são referências coletivas: '
-                             f'não precisam de task ou delegação própria. IDs delegáveis nesta fase: {eligible}.')
-        seen.add(item.id)
-        item.execution_owner = 'build'
-        item.delegation_reason = delegation.reason
-    return result
+    if delegations:
+        raise ValueError('Responsabilidades são definidas na classificação semântica aprovada; a revisão não pode alterá-las.')
+    return requirements
 
 
 def build_requirements(document):
-    requirements = []
+    requirements = [Requirement(id=f"R{i:03d}", phase_number=-1, kind="criterion", text=text,
+                                execution_owner="collective") for i, text in enumerate(document['requirements'], 1)]
     for index, item in enumerate(document['stack'], 1):
         requirements.append(Requirement(id=f'P0-S{index:03d}', phase_number=0, kind='technology',
             text=f"{item['component']}: {item['choice']}. {item['reason']}"))
@@ -56,14 +29,8 @@ def build_requirements(document):
         for key, prefix, kind in (('tasks', 'A', 'activity'), ('deliverables', 'D', 'deliverable'),
                                    ('acceptance_criteria', 'C', 'criterion')):
             for index, text in enumerate(phase[key], 1):
-                explicit_qa = (kind == 'activity' and is_build_validation(text) and (
-                    re.match(r'^(?:(?:criar|escrever) testes|executar (?:verifica|teste|fluxo)|demonstrar|'
-                             r'revisar (?:a )?interface|registrar (?:os? )?resultados)', normalized(text))
-                    or re.search(r'verifica|valida|teste', normalized(phase['title']))))
                 requirements.append(Requirement(id=f'P{number}-{prefix}{index:03d}', phase_number=number,
-                    kind=kind, text=text, execution_owner='build' if explicit_qa else 'tasks' if kind == 'activity' else 'collective',
-                    delegation_reason='Atividade explícita de QA da origem; definição e execução de validações pertencem ao build.'
-                    if explicit_qa else ''))
+                    kind=kind, text=text, execution_owner='tasks' if kind == 'activity' else 'collective'))
         requirements.append(Requirement(id=f'P{number}-G001', phase_number=number, kind='goal', text=phase['goal'],
                                         execution_owner='collective'))
     return {item.id: item for item in requirements}
@@ -86,6 +53,8 @@ def check_seed(seed, number, origin, requirements):
             raise ValueError('Coverage deve apontar um ID desta fase e um excerpt literal de seu requisito.')
         if item.execution_owner == 'build':
             raise ValueError('Atividade de validação já delegada ao build: não a converta em uma task de testes no plan.')
+        if item.execution_owner == 'collective':
+            raise ValueError(f'{item.id} é referência coletiva. Atribua somente partes com execution_owner=tasks, não o parágrafo misto ou critério inteiro.')
 
 
 def check_assignments(phases, requirements):

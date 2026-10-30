@@ -141,36 +141,48 @@ documenta as escolhas já aprovadas. As demais fases são divididas em tasks peq
 com IDs estáveis, objetivo delimitado, passos de implementação, entregáveis e
 referências literais da fase de origem.
 
-O revisor decompõe cada fase em recortes. Cada atividade recebe um identificador
-estável, e cada task declara os trechos específicos sob sua responsabilidade.
-Atividades amplas podem ter várias tasks, com recortes distintos. O harness rejeita
-atribuições duplicadas e atividades sem responsável antes de iniciar as redações.
+Antes da redação, o revisor classifica semanticamente as atividades do init em
+implementação, documentação e responsabilidades do build. Itens mistos são divididos em
+recortes literais que cobrem todo o texto original. O harness verifica a partição; o
+revisor decide somente a responsabilidade de cada parte, sem reescrever a origem.
+O mapa resultante recebe aprovação explícita e fica estável durante o plan. Não há
+classificador por início de frase: “Usar Playwright para executar fluxos” é avaliado pelo
+seu significado. Critérios e entregáveis coletivos permanecem referências de conjunto.
 
-O escritor recebe somente um recorte por chamada, suas referências, stack e restrições
-necessárias. Todas as chamadas começam com contexto vazio. A revisão individual
-recebe o recorte e o mapa de seus responsáveis; não cobra a frase inteira nem itens
-atribuídos às tasks irmãs. A fase e o plano passam por comparação coletiva com a origem.
+O escritor recebe uma task, stack, restrições e requisitos globais do produto, sem a fase
+inteira ou histórico conversacional. O revisor verifica apenas o recorte atribuído, usando
+os detalhes globais quando necessários (por exemplo, os valores de um status). As fases
+passam depois por revisão coletiva contra a origem.
 
-O plan escreve instruções de implementação futura, como “implementar cliente HTTP”,
-sem gerar ou executar código agora. Não transforma uma funcionalidade executável em
-mera documentação de requisitos. Infraestrutura já solicitada, como bancos temporários
-isolados, permanece no plano; cenários e estratégias de validação pertencem ao build.
+Uma devolução de conteúdo exige um **contrato de correção**: task e versão de origem,
+evidência literal, problema concreto, substituições exatas por campo e condições de aceite
+`contains`/`excludes`. O harness confere que o defeito existe antes e que a mudança satisfaz
+o aceite. Outro exame documental valida a coerência desse contrato antes de enviá-lo ao
+escritor. Um contrato semanticamente rejeitado pode ser corrigido uma vez; a contradição
+persistente interrompe o módulo com diagnóstico.
 
-Desvios de conteúdo retornam à task apontada. Remoção, divisão e consolidação são
-operações estruturadas: o harness confere o lote inteiro em cópias, verifica cobertura
-e conflitos e só então aplica todas as mudanças antes de chamar o escritor. Adições
-precisam de responsabilidade ainda não atribuída. IDs removidos não são reutilizados;
-as tasks retiradas ficam no histórico, fora da lista de tasks ativas.
+O escritor aplica cada contrato uma única vez e preserva os campos restantes. Se sua
+resposta desviar das substituições autorizadas, o harness aplica exatamente o patch
+aprovado e registra a recuperação; não pede outra tentativa. A task corrigida ainda
+precisa de aprovação explícita do revisor. Os aceites já estabelecidos permanecem ativos:
+uma nova devolução não pode exigir o contrário ou reabrir o mesmo conflito, mesmo com
+outra redação. Uma falha desse contrato deixa o plan incompleto, com diagnóstico.
 
-As aprovações são vinculadas ao hash da versão da task. Alterar seu escopo invalida
-sua aprovação; as versões intactas são preservadas. Fases afetadas são revisadas novamente.
+Remoção, divisão e consolidação são operações estruturadas, aplicadas em lote após validar
+cobertura e conflitos. Elas não são instruções vagas para o escritor. A revisão individual
+não possui esses campos; pode solicitar uma reavaliação estrutural específica. IDs removidos
+não são reutilizados e as versões retiradas ficam no histórico. Uma decisão vigente não é
+silenciosamente substituída. Repetir o mesmo problema estrutural sem mudar o mapa é falha
+de contrato, sem aprovação automática.
 
-Três devoluções consecutivas de uma task ou a repetição de uma devolução coletiva
-acionam uma reavaliação da estrutura e dos limites da fase. Pendências mantêm IDs
-estáveis, motivos, versões e decisões explícitas. Esses dados de controle acompanham
-as chamadas novas sem recuperar uma sessão conversacional. A reavaliação pode corrigir
-a estrutura ou esclarecer responsabilidades; não aprova tasks ou fases automaticamente.
-Todas as aprovações documentais continuam obrigatórias, sem limite fixo de rodadas.
+Depois de aprovar cada task e fase, a conclusão confere fonte, cobertura, dependências,
+versões e condições de aceite. O revisor certifica essa consolidação, sem outra rodada
+livre de reescrita de conteúdo aprovado. O build só é habilitado após todas as aprovações
+e os certificados íntegros. Há certificados por versão nos artefatos.
+
+Erros de JSON/schema/contrato têm uma oportunidade de reparo. Uma segunda resposta inválida
+encerra a operação com `control/contract-failure.json`, em vez de repetir indefinidamente.
+O dashboard contabiliza correções documentais e erros de contrato separadamente.
 
 O plan não entrevista o usuário, gera código, verifica dependências instaladas ou
 executa testes. Suas verificações se limitam à correspondência entre os documentos.
@@ -178,12 +190,11 @@ Também não cria cenários, comandos, estratégias ou roteiros de testes para o
 o build definirá suas validações. Identificar as dependências de desenvolvimento e
 testes já aprovadas na fase 0 não constitui um plano de testes.
 
-Quando o init já enumera execução de testes, demonstrações no navegador, auditoria da
-interface ou registro de resultados, o mapa preserva essas atividades com responsabilidade
-do build. Elas não viram tasks prescritivas de QA. Fases exclusivamente de validação
-podem permanecer sem tasks de implementação, mantendo sua identidade e revisão documental.
-Validação funcional de campos, regras de negócio e preparação de infraestrutura continuam
-no plano. Na fase 0, a finalidade de uma ferramenta de testes é apenas informação do catálogo.
+O plan **não determina o que o build deve ou não testar**. O build escolhe livremente os
+testes, inclusive os não citados na origem. Menções a QA no init são preservadas no mapa
+como referências de responsabilidade, sem virar tasks de testes, cenários ou limites.
+Documentar nomes de dependências já aprovadas na fase 0 é permitido. Regras funcionais
+de campos e infraestrutura de produção continuam nas tasks de implementação.
 
 ```text
 .harness/plan/
@@ -196,9 +207,14 @@ no plano. Na fase 0, a finalidade de uma ferramenta de testes é apenas informa�
   context/call-0001.json         # entrada isolada, sem histórico de outras chamadas
   control/settings.json          # escritor, revisor e política de contexto
   control/checkpoint.json        # progresso e versões aprovadas
-  control/requirements.json      # requisitos estáveis derivados do init
+  control/requirements.json      # requisitos e partes literais com responsáveis
+  control/classification.json    # classificação semântica aprovada
+  control/classification-approval.json # certificado do mapa e hash da origem
+  control/corrections.json       # contratos, aceites e versões corrigidas
+  control/completion-certificate.json # conferência explícita das aprovações
+  control/contract-failure.json  # diagnóstico, somente se houver falha de contrato
   control/coverage.json          # mapa de responsabilidades por recorte
-  control/issues.json            # pendências, recorrências e decisões de escopo
+  control/issues.json            # pendências e decisões de escopo vigentes
   control/repairs/                # lotes de correções e operações estruturais
   control/retired/                # histórico de tasks removidas ou substituídas
   control/reviews/               # pareceres de cada comparação documental
@@ -392,3 +408,9 @@ As regressões de revisão incluem remoções enviadas incorretamente ao escrito
 atribuições duplicadas, divisão/consolidação com IDs estáveis, reparos em lote,
 revisão limitada ao recorte, rejeições contraditórias, reavaliação sem aprovação
 automática e preservação de aprovações de versões intactas.
+
+As regressões de contratos cobrem devolução do mesmo erro com outra redação,
+exigências contrárias a um aceite vigente, mudanças sobre versão antiga, correções
+vagas, falha de JSON repetida, escritor que ignora o patch, classificação de QA com
+redações diferentes, partições mistas sem perda de texto e certificados adulterados.
+Nenhuma dessas falhas libera o build ou produz aprovação por tentativas.

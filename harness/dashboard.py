@@ -37,6 +37,10 @@ STAGES = {
 }
 PIPELINE = ("Pedido", "Análise", "Entrevista", "Redação", "Revisão", "Concluído")
 PLAN_STAGES = {
+    "classifying": (0, "Classificando responsabilidades"),
+    "reviewing_classification": (1, "Validando responsabilidades"),
+    "correcting_task": (2, "Aplicando contrato de correção"),
+    "contract_conflict": (4, "Conflito de contrato"),
     "starting": (0, "Prompt do init"), "decomposing": (1, "Divisão da fase"),
     "writing_task": (2, "Redação da task"), "reviewing_task": (3, "Revisão da task"),
     "reviewing_phase": (4, "Revisão da fase"), "reviewing_plan": (4, "Revisão do plano"),
@@ -134,6 +138,7 @@ class InitDashboard(VerticalScroll):
     InitDashboard.short #dash-brand, InitDashboard.short #dash-tagline { height: 7; }
     InitDashboard.short #dash-mascot { display: none; }
     InitDashboard.planning #dash-work-row { height: 16; }
+    InitDashboard.planning #dash-metrics { grid-size: 8; }
     InitDashboard.planning #dash-pipeline { height: 16; }
     InitDashboard.planning.compact #dash-work-row { height: 26; }
     InitDashboard.planning.narrow #dash-work-row { height: 30; }
@@ -188,7 +193,7 @@ class InitDashboard(VerticalScroll):
             with Grid(id="dash-metrics"):
                 metrics = (("FASES", "phases"), ("TASKS", "tasks"), ("RODADA", "round"),
                            ("OPERAÇÕES", "operations"), ("INVOCAÇÕES", "invocations"),
-                           ("CORREÇÕES", "corrections"), ("TOKENS", "tokens")) if self.module == "plan" else (
+                           ("CORREÇÕES", "corrections"), ("CONTRATOS", "contract_errors"), ("TOKENS", "tokens")) if self.module == "plan" else (
                                    ("ENTREVISTA", "questions"), ("RODADA", "round"), ("OPERAÇÕES", "operations"),
                                    ("INVOCAÇÕES", "invocations"), ("CORREÇÕES", "corrections"),
                                    ("INFERÊNCIAS", "inferences"), ("TOKENS", "tokens"))
@@ -200,7 +205,9 @@ class InitDashboard(VerticalScroll):
                         "round": "Rodada atual de elaboração e revisão documental.",
                         "operations": "Pedidos lógicos aos agentes durante este módulo.",
                         "invocations": "Tentativas de chamada ao CLI, incluindo novas chamadas para corrigir formato.",
-                        "corrections": "Devoluções para ajustar o documento ou o contrato da resposta.",
+                        "corrections": ("Devoluções documentais; erros de formato/contrato têm contador separado." if self.module == "plan"
+                                        else "Devoluções para ajustar o documento ou o contrato da resposta."),
+                        "contract_errors": "Respostas que violaram o contrato; uma oportunidade de corrigir formato, sem repetição indefinida.",
                         "inferences": "Decisões internas registradas pelo escritor, sem entrevista.",
                         "tokens": "O consumo de tokens dos CLIs ainda não é medido pelo harness.",
                     }[key]
@@ -273,6 +280,8 @@ class InitDashboard(VerticalScroll):
             self.log(f"{role} · chamada {event.invocations} concluída")
         elif event.kind == "format_correction":
             self.log(f"{role} · resposta devolvida para correção do contrato", YELLOW)
+        elif event.kind == "writer_recovered":
+            self.log("escritor · patch autorizado aplicado exatamente após desvio da resposta", YELLOW)
         elif event.kind == "interview_prepared":
             self.log(f"entrevista · {event.questions} pergunta(s) no total")
         elif event.kind == "answer_saved":
@@ -304,6 +313,8 @@ class InitDashboard(VerticalScroll):
                            ("round", str(self.event.round)), ("operations", str(self.event.operations)),
                            ("invocations", str(self.event.invocations)), ("corrections", str(self.event.corrections))):
             self.query_one(f"#metric-{key}", DashboardField).set_value(value)
+        if self.module == "plan":
+            self.query_one("#metric-contract_errors", DashboardField).set_value(str(self.event.contract_errors))
         self.query_one("#dash-provider-body", Static).update(self.provider())
         if self.module == "plan":
             self.query_one(PlanProgress).update_items(self.event.items)

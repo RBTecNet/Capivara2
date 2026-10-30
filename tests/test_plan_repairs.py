@@ -8,6 +8,7 @@ from harness.plan_artifacts import load_init
 from harness.plan_control import prepare_changes, stub
 from harness.plan_coverage import build_requirements, check_seed
 from harness.plan_engine import PlanEngine
+from harness.plan_contracts import PlanContractError
 from harness.plan_models import PlanReview, TaskSeed, PlannedPhase, PhaseOutline, PlanRepair, agent_schema
 import test_plan
 from plan_fixture import PlanAgents, approved_review, rejected
@@ -87,10 +88,8 @@ class PlanRepairTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_batch_transfers_responsibilities_before_any_writer_is_called(self):
         agents = PlanAgents()
-        verdict = rejected('P1-T001', 'Defina apenas o esquema; os campos terão outro responsável.')
-        verdict['corrections'][0]['replacement_seed'] = seed('Definir esquema', 'esquema')
-        verdict['additions'] = [{'phase_number': 1, 'after_task_id': 'P1-T001',
-                                 'task': seed('Definir campos das tarefas', 'tarefas')}]
+        verdict = structural_review([structural('split', ['P1-T001'],
+            [seed('Definir esquema', 'esquema'), seed('Definir campos das tarefas', 'tarefas')])])
         agents.phase_reviews = [approved_review(), verdict]
         observed = []
         engine = PlanEngine(self.state, agents)
@@ -101,7 +100,7 @@ class PlanRepairTests(unittest.IsolatedAsyncioTestCase):
         agents.on_generate = observe
         await engine.run()
         self.assertTrue(observed)
-        self.assertTrue(all(items == [('P1-T001', ['esquema']), ('P1-T002', ['tarefas'])] for items in observed))
+        self.assertTrue(all(items == [('P1-T002', ['esquema']), ('P1-T003', ['tarefas'])] for items in observed))
 
     async def test_split_retires_old_task_and_reviews_every_replacement(self):
         agents = PlanAgents()
@@ -129,7 +128,7 @@ class PlanRepairTests(unittest.IsolatedAsyncioTestCase):
                     out = json.loads(result)
                     out['tasks'].append({'title':'Resumo redundante', 'scope':'Repetir objetivo da persistência.',
                         'source_quotes':['Guardar tarefas localmente.'],
-                        'coverage':[{'requirement_id':'P1-G001', 'excerpt':'Guardar tarefas localmente.'}]})
+                        'coverage':[{'requirement_id':'P1-A001', 'excerpt':'tarefas'}]})
                     return json.dumps(out)
                 return result
         agents = WithExtraTask()
@@ -141,32 +140,24 @@ class PlanRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(d['task_id']=='P1-T002' for d in writes), 1)
         self.assertFalse(any(d['correction'] and 'remov' in d['correction']['instruction'].lower() for d in writes))
 
-    async def test_repeated_rejections_trigger_reassessment_with_stable_issue_and_no_auto_approval(self):
+    async def test_repeated_rejection_is_a_contract_failure_not_another_writer_attempt(self):
         agents = PlanAgents()
-        agents.task_reviews = [rejected('P0-T001', 'Preservar somente o recorte atribuído.')] * 3
+        agents.task_reviews = [rejected('P0-T001', 'Preservar somente o recorte atribuído.')] * 2
         engine = PlanEngine(self.state, agents)
-        await engine.run()
-        calls = [e['current_request']['task'] for _,e in agents.calls]
-        self.assertIn('reassess_phase', calls)
-        meta_index = calls.index('reassess_phase')
-        self.assertEqual(calls[meta_index+1], 'review_task')
-        issues = list(engine.ledger.issues.values())
-        self.assertEqual(len(issues), 1)
-        self.assertEqual(issues[0]['occurrences'], 3)
-        self.assertEqual(issues[0]['status'], 'resolved')
-        self.assertTrue(engine.ledger.decisions)
-        reviews = [e['current_request']['data'] for _,e in agents.calls if e['current_request']['task']=='review_task']
-        self.assertTrue(any(d['scope_decisions']['decisions'] for d in reviews))
-        self.assertTrue(all('source' not in d and 'phase_source' not in d for d in reviews))
-        collective = [e['current_request']['data'] for _,e in agents.calls
-                      if e['current_request']['task']=='review_phase']
-        self.assertTrue(all(all(entry['requirement']['phase_number']==d['phase']['number']
-                               for entry in d['coverage_map']) for d in collective))
-        self.assertEqual(suggested_module(self.root), 'build')
+        with self.assertRaisesRegex(PlanContractError, 'mesmo conflito'):
+            await engine.run()
+        operations = [e['current_request']['task'] for _,e in agents.calls]
+        self.assertEqual(operations.count('correct_task'), 1)
+        self.assertNotIn('reassess_phase', operations)
+        self.assertEqual(read_status(self.root)['modules']['plan']['status'], 'failed')
+        self.assertFalse((self.root/'.harness/plan/final.md').exists())
+        self.assertTrue((self.root/'.harness/plan/control/contract-failure.json').exists())
 
     async def test_reassessment_does_not_mark_tasks_approved_when_next_review_is_cancelled(self):
         agents = PlanAgents()
-        agents.task_reviews = [rejected('P0-T001')] * 3
+        concern = rejected('P0-T001')
+        concern['corrections'][0]['category']='structure'
+        agents.task_reviews = [concern]
         engine = PlanEngine(self.state, agents)
         def cancel(operation, store):
             if operation == 'review_task' and engine.ledger.decisions:
@@ -178,16 +169,16 @@ class PlanRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(read_status(self.root)['modules']['plan']['status'], 'cancelled')
         self.assertFalse((self.root/'.harness/plan/final.md').exists())
 
-    async def test_repeated_global_rejection_also_reassesses_the_affected_phase(self):
+    async def test_final_consolidation_does_not_reopen_approved_tasks(self):
         agents = PlanAgents()
-        agents.plan_reviews = [rejected('P2-T001', 'Preserve o recorte de adicionar tarefas.')] * 2
+        agents.plan_reviews = [rejected('P2-T001', 'Reabrir indevidamente uma task aprovada.')]
         engine = PlanEngine(self.state, agents)
         await engine.run()
-        meta = [e['current_request'] for _,e in agents.calls if e['current_request']['task']=='reassess_phase']
-        self.assertEqual(len(meta), 1)
-        self.assertEqual(meta[0]['data']['phase']['number'], 2)
-        self.assertEqual(suggested_module(self.root), 'build')
-        self.assertTrue(all(issue['status']=='resolved' for issue in engine.ledger.issues.values()))
+        operations = [e['current_request']['task'] for _,e in agents.calls]
+        self.assertEqual(operations.count('validate_completion'),1)
+        self.assertNotIn('review_plan',operations)
+        self.assertNotIn('correct_task',operations)
+        self.assertEqual(len(agents.plan_reviews),1)
 
     async def test_all_checks_true_cannot_be_rejected_for_editorial_preferences(self):
         bad = {**approved_review(), 'approved': False,

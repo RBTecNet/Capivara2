@@ -31,6 +31,7 @@ class Requirement(DocumentModel):
     text: str
     execution_owner: Literal["tasks", "build", "collective"] = "tasks"
     delegation_reason: str = ""
+    source_id: str = ""
 
 
 class CoverageClaim(DocumentModel):
@@ -84,6 +85,7 @@ class TaskCorrection(DocumentModel):
     instruction: str = Field(min_length=1)
     replacement_seed: TaskSeed | None
     category: Literal["fidelity", "coverage", "granularity", "test_strategy", "structure"] = "fidelity"
+    contract: dict | None = None
 
 
 class TaskAddition(DocumentModel):
@@ -165,6 +167,7 @@ class FinalPlan(DocumentModel):
     context_policy: Literal["fresh"] = "fresh"
     phases: list[PlannedPhase] = Field(min_length=1)
     requirements: list[Requirement] = Field(default_factory=list)
+    contract_version: int = 1
 
     @model_validator(mode="after")
     def valid_structure(self):
@@ -181,12 +184,15 @@ class FinalPlan(DocumentModel):
         return self
 
     def render(self) -> str:
+        testing_policy = ("O build decide livremente o que testar, como testar e quais testes criar e executar, "
+                          "inclusive testes não mencionados na origem. Este plano não prescreve nem restringe suas validações."
+                          if self.contract_version >= 2 else "Os testes de validação serão definidos pelo build.")
         sections = [f"# {self.title}", f"## Objetivo\n\n{self.objective}",
             f"Origem: prompt aprovado do init (SHA-256 `{self.source_prompt_sha256}`).",
             "## Contrato de execução futura\n\nCada task é uma unidade independente. O escritor e o revisor "
             "devem iniciar com contexto vazio em cada chamada; fornecer apenas a task e suas referências "
             "necessárias. A aplicação pertence à raiz do projeto; .harness armazena documentação e controle. "
-            "Os testes de validação serão definidos pelo build."]
+            + testing_policy]
         for phase in self.phases:
             sections.append(f"## Fase {phase.number} — {phase.title}\n\n{phase.goal}\n\n"
                 f"Dependências: {', '.join(f'fase {n}' for n in phase.depends_on) or 'nenhuma'}.")

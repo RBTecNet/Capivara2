@@ -22,23 +22,31 @@
   `build` fica para uma etapa posterior.
 - O plan exige init aprovado e íntegro, preserva suas fases e divide cada fase
   em tasks pequenas. Cada chamada começa sem histórico; o escritor recebe só
-  uma task. Revisar tasks, fases e plano completo até aprovação explícita.
+  uma task. Tasks e fases exigem aprovação explícita; a conclusão certifica essas
+  aprovações e a cobertura completa, sem reabrir conteúdo por uma revisão livre.
 - O plan só compara documentação com a origem. Não executar testes nem verificar
   ambiente, gerar código ou prescrever testes de validação ao build. A fase 0
   documenta stack e dependências de desenvolvimento e testes já definidas no init.
 - O plan descreve implementação futura, sem executá-la. Preservar infraestrutura
   explicitamente pedida; não confundir isso com prescrever estratégias de testes.
-- Atividades explícitas de QA herdadas do init ficam rastreadas como responsabilidade
-  do build, sem gerar roteiros de testes no plan. Validação funcional de campos e
+- O plan não determina o que o build deve ou não testar. Atividades de QA herdadas
+  ficam rastreadas semanticamente como responsabilidade do build, sem gerar tasks,
+  roteiros ou limites a testes, inclusive os não citados. Validação funcional de campos e
   preparação da infraestrutura continuam nas tasks. A fase 0 somente cataloga
   tecnologias e ferramentas; suas finalidades não são ordens de executar testes.
 - Tasks declaram responsabilidades por IDs e recortes literais dos requisitos.
   Revisar cada task apenas em seu escopo e conferir cobertura coletivamente.
   Remover, dividir e consolidar são operações estruturadas e validadas em lote
   antes de novas redações. Não enviar remoção como uma instrução ao escritor.
-- Repetições sem avanço acionam reavaliação documental da fase. Registrar pendências,
-  versões e decisões de escopo explícitas, mantendo chamadas sem histórico e sem
-  aprovação automática por número de tentativas.
+- A classificação semântica é aprovada antes da redação; referências mistas devem
+  ser separadas sem omitir texto. Revisões posteriores não mudam os responsáveis.
+- Devoluções exigem versão, evidência, alterações exatas e aceite verificável. Cada
+  conflito tem uma aplicação pelo escritor; não reenviar o mesmo erro nem contrariar
+  aceites vigentes. Reincidência/contradição é falha diagnosticada de contrato, sem
+  aprovação por insistência. Resposta inválida tem uma oportunidade de reparo.
+- Preservar campos não alterados, decisões vigentes e aprovações por versão.
+  Reavaliar estrutura apenas com operações concretas ou decisão específica,
+  mantendo chamadas sem histórico e sem aprovação automática por tentativas.
 - Todo artefato e status de módulos fica em `.harness` no projeto selecionado:
   logs, entrevistas (`enterviews`), prompts, contexto e controle. A aplicação
   futura pertence à raiz do projeto; todo o estado do harness fica em `.harness`.

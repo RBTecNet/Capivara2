@@ -21,11 +21,16 @@ class PlanAgents:
         self.calls = []
         self.task_reviews = []
         self.phase_reviews = []
+        self.phase_reviews_by_number = {}
         self.plan_reviews = []
         self.invalid = 0
         self.cancel = False
         self.on_generate = None
         self.repairs = []
+        self.classifications = []
+        self.classification_reviews = []
+        self.contract_reviews = []
+        self.ignore_correction = False
 
     async def generate(self, selection, role, prompt, schema, store, call_id):
         envelope = json.loads(prompt.rsplit("\n\nREQUEST:\n", 1)[1])
@@ -40,6 +45,27 @@ class PlanAgents:
         if self.invalid:
             self.invalid -= 1
             return "resposta inválida"
+        if operation == "classify_work":
+            if self.classifications:
+                return json.dumps(self.classifications.pop(0))
+            return json.dumps({"activities": [{"source_id": a["source_id"], "parts": [{"text": a["text"],
+                "responsibility": "build" if a["text"].startswith(("Executar testes", "Registrar resultados")) else "implementation",
+                "reason": "Responsabilidade de implementação ou execução de QA conforme a origem."}]} for a in data["activities"]]})
+        if operation == "review_classification":
+            return json.dumps(self.classification_reviews.pop(0) if self.classification_reviews else
+                              {"status": "approved", "summary": "Responsabilidades fiéis à origem.", "corrections": []})
+        if operation == "validate_completion":
+            return json.dumps({"approved": True, "reason": "Todas as tasks, fases e versões foram explicitamente aprovadas e a origem foi preservada."})
+        if operation == "validate_correction":
+            return json.dumps(self.contract_reviews.pop(0) if self.contract_reviews else {"approved": True, "reason": "Contrato concreto e fiel."})
+        if operation == "repair_correction":
+            return json.dumps(data["rejected_contract"])
+        if operation == "correct_task":
+            result = dict(data["previous_task"])
+            if not self.ignore_correction:
+                for change in data["correction"]["changes"]:
+                    result[change["field"]] = change["after"]
+            return json.dumps(result)
         if operation == "outline_phase":
             origin = data["phase_source"]
             # Um recorte por atividade; fase 2 é dividida em operações pequenas.
@@ -54,7 +80,9 @@ class PlanAgents:
             tasks = [{"title": title, "scope": scope, "source_quotes": [quote], "coverage": []}
                      for title, scope, quote in seeds]
             requirements = data["requirements"]
-            activities = [r for r in requirements if r["kind"] in ("activity", "technology", "tool")]
+            activities = [r for r in requirements if r["kind"] in ("activity", "technology", "tool") and r["execution_owner"] == "tasks"]
+            if not activities:
+                return json.dumps({"tasks": []})
             if origin["number"] == 0:
                 for r in activities:
                     index = 1 if "Playwright" in r["text"] else 0
@@ -76,9 +104,44 @@ class PlanAgents:
                 "decisions": [{"issue_id": i["id"], "task_id": i["task_id"],
                     "decision": "A task deve atender apenas seu recorte; não cobrar responsabilidades de outras tasks."}
                     for i in data["scope_decisions"]["issues"] if i["status"] == "open"],
-                "corrections": [], "additions": [], "structural_changes": []})
+                "additions": [], "structural_changes": []})
         reviews = {"review_task": self.task_reviews, "review_phase": self.phase_reviews, "review_plan": self.plan_reviews}
         if operation in reviews:
-            queue = reviews[operation]
-            return json.dumps(queue.pop(0) if queue else approved_review())
+            queue = (self.phase_reviews_by_number.get(data["phase"]["number"], self.phase_reviews)
+                     if operation == "review_phase" else reviews[operation])
+            review = queue.pop(0) if queue else approved_review()
+            # Respostas antigas da fixture são traduzidas para o contrato próprio do papel.
+            if "replan" in review:
+                return json.dumps(review)
+            result = {k: review[k] for k in ("approved", "matches_source", "coverage_complete", "tasks_are_small", "no_test_strategy", "summary")}
+            result["corrections"] = []
+            for correction in review["corrections"]:
+                task = data.get("task")
+                if task is None:
+                    phases = [data["phase"]] if "phase" in data else data["phases"]
+                    task = next((t for p in phases for t in p["tasks"] if t["id"] == correction["task_id"]), None)
+                if task is None:
+                    task = {"id": correction["task_id"], "content": {"objective": "Inválido"}, "seed": {"coverage": []}}
+                claims = task["seed"]["coverage"]
+                req_id = claims[0]["requirement_id"] if claims else "invalid"
+                reqs = data.get("assigned_requirements", []) or [r["requirement"] for r in data.get("coverage_map", [])]
+                req = next((r for r in reqs if r["id"] == req_id), {"text": "Inválido"})
+                if operation == "review_task" and correction.get("category") in ("structure", "granularity"):
+                    result["replan"] = {"task_id": correction["task_id"], "reason": correction["reason"],
+                                       "evidence": [{"requirement_id": req_id, "quote": req["text"]}]}
+                    continue
+                before = task["content"]["objective"]
+                marker = "Requisito preservado: " + req["text"]
+                spec = correction.get("contract") or {"task_id": correction["task_id"],
+                    "base_version": data.get("base_version") or data["approved_versions"].get(correction["task_id"], "invalid"),
+                    "category": correction.get("category", "fidelity"), "reason": correction["reason"], "instruction": correction["instruction"],
+                    "evidence": [{"requirement_id": req_id, "quote": req["text"]}],
+                    "changes": [{"field": "objective", "before": before, "after": before + " " + marker}],
+                    "acceptance": [{"field": "objective", "operator": "contains", "value": marker}]}
+                result["corrections"].append(spec)
+            if operation == "review_task":
+                result.setdefault("replan", None)
+            else:
+                result.update(additions=review.get("additions", []), structural_changes=review.get("structural_changes", []))
+            return json.dumps(result)
         raise AssertionError(operation)

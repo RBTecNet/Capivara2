@@ -18,6 +18,7 @@ from harness.init_ui import InitExecutionStep
 from harness.plan_artifacts import load_init, plan_completed
 from harness.plan_engine import PlanEngine
 from harness.plan_models import PlanReview
+from harness.plan_contracts import PlanContractError
 from init_fixture import ScriptedAgents
 from plan_fixture import PlanAgents, approved_review, rejected
 from test_wizard import test_catalog
@@ -76,19 +77,17 @@ class PlanTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_only_divergent_task_is_rewritten_until_approved(self):
         agents = PlanAgents()
-        agents.task_reviews = [rejected("P0-T001", "Remova a tecnologia não solicitada.")] * 3
+        agents.task_reviews = [rejected("P0-T001", "Explicite o requisito da stack aprovada.")]
         agents.phase_reviews = [rejected("P0-T002", "Preserve apenas a dependência definida no init.")]
-        agents.plan_reviews = [rejected("P2-T003", "Restaure a operação de concluir tarefas.")]
+
         events = []
         await PlanEngine(self.state, agents, on_event=events.append).run()
         writes = [data["current_request"]["data"] for role, data in agents.calls if role == "writer"]
         counts = Counter(data["task_id"] for data in writes)
-        self.assertEqual(counts["P0-T001"], 3)
+        self.assertEqual(counts["P0-T001"], 2)
         self.assertEqual(counts["P0-T002"], 2)
-        self.assertEqual(counts["P2-T003"], 2)
+        self.assertEqual(counts["P2-T003"], 1)
         self.assertEqual(counts["P2-T004"], 1)
-        self.assertIn("concluir", next(data["correction"]["instruction"] for data in writes
-                                       if data["task_id"] == "P2-T003" and data["correction"]))
         self.assertEqual(suggested_module(self.root), "build")
         states = [(item.creation, item.validation) for event in events for item in event.items if item.id == "P0-T001"]
         for expected in (("waiting", "waiting"), ("running", "waiting"), ("completed", "running"),
@@ -101,8 +100,8 @@ class PlanTests(unittest.IsolatedAsyncioTestCase):
             "additions": [{"phase_number": 2, "after_task_id": "P2-T002", "task": {
                 "title": "Persistência das operações", "scope": "Conectar operações à persistência local.",
                 "source_quotes": ["Gerenciar as tarefas."],
-                "coverage": [{"requirement_id": "P2-G001", "excerpt": "Gerenciar as tarefas."}]}}]}
-        agents.plan_reviews = [verdict]
+                "coverage": [{"requirement_id": "P2-A001", "excerpt": "tarefas"}]}}]}
+        agents.phase_reviews_by_number = {2: [verdict]}
         path = await PlanEngine(self.state, agents).run()
         plan = json.loads(path.with_suffix(".json").read_text())
         ids = [t["id"] for t in plan["phases"][2]["tasks"]]
@@ -111,7 +110,7 @@ class PlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(e["current_request"]["data"]["task"]["id"] == "P2-T005" for e in task_reviews))
         self.assertEqual(suggested_module(self.root), "build")
 
-    async def test_wrong_outline_can_be_corrected_without_trapping_writer_in_the_wrong_scope(self):
+    async def test_content_correction_preserves_the_approved_seed(self):
         agents = PlanAgents()
         verdict = rejected("P0-T001", "Corrija também o recorte: preservar Python como stack.")
         replacement = {"title": "Runtime Python aprovado", "scope": "Preparar Python e preservar SQLite como ferramenta de persistência.",
@@ -122,10 +121,10 @@ class PlanTests(unittest.IsolatedAsyncioTestCase):
         agents.task_reviews = [verdict]
         final = await PlanEngine(self.state, agents).run()
         plan = json.loads(final.with_suffix(".json").read_text())
-        self.assertEqual(plan["phases"][0]["tasks"][0]["seed"], replacement)
+        self.assertNotEqual(plan["phases"][0]["tasks"][0]["seed"], replacement)
         writes = [e["current_request"]["data"] for role, e in agents.calls if role == "writer"
                   and e["current_request"]["data"]["task_id"] == "P0-T001"]
-        self.assertEqual(writes[-1]["seed"], replacement)
+        self.assertEqual(writes[-1]["seed"], writes[0]["seed"])
         self.assertEqual(len(writes), 2)
 
     async def test_reexecution_cancellation_and_lock_preserve_init(self):
@@ -173,26 +172,20 @@ class PlanTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_contract_and_unknown_corrections_return_to_reviewer_without_history(self):
         agents = PlanAgents()
-        agents.invalid = 2
+        agents.invalid = 1
         agents.phase_reviews = [rejected("P999-T999")]
         await PlanEngine(self.state, agents).run()
         corrected = [envelope for _, envelope in agents.calls if envelope["format_correction"]]
-        self.assertGreaterEqual(len(corrected), 3)
+        self.assertGreaterEqual(len(corrected), 2)
         self.assertTrue(all(not envelope["preserved_context"] for envelope in corrected))
         bad = {**approved_review(), "no_test_strategy": False}
         with self.assertRaises(ValueError):
             PlanReview.model_validate(bad)
-        agents = PlanAgents()
-        agents.plan_reviews = [{**approved_review(), "approved": False, "no_test_strategy": False,
-                               "corrections": rejected("P0-T002", "Remova o roteiro de testes; mantenha só as dependências.")["corrections"]}]
-        await PlanEngine(self.state, agents).run()
-        self.assertTrue(any("roteiro" in json.dumps(e, ensure_ascii=False) for role, e in agents.calls if role == "writer"))
-
     async def test_source_change_during_plan_never_marks_completed(self):
         agents = PlanAgents()
 
         def change(operation, store):
-            if operation == "review_plan":
+            if operation == "validate_completion":
                 (self.root / ".harness/prompts/final.md").write_text("alteração externa")
 
         agents.on_generate = change
