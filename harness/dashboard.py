@@ -49,6 +49,10 @@ PLAN_STAGES = {
     "completed": (5, "Finalizando"),
 }
 BUILD_STAGES = {
+    "diagnosing":(4,"Diagnosticando repetição"), "verification_repair":(4,"Reparando verificação"),
+    "verification_repaired":(4,"Verificação reparada"), "scope_recovery":(1,"Ajustando reserva"),
+    "scope_recovered":(1,"Reserva ajustada"), "task_recovery":(2,"Recuperando task"),
+    "writer_recovery":(2,"Corrigindo entrega"), "auditor_recovery":(4,"Recuperando auditor"),
     "dependencies": (0,"Verificando dependências"), "installing_dependencies":(0,"Instalando dependências"),
     "dependencies_ready":(0,"Ambiente preparado"), "dependencies_blocked":(0,"Instalação manual necessária"),
     "scheduling":(1,"Organizando tasks"), "g0":(2,"G0 · Escrita"), "g1":(3,"G1 · Existência"),

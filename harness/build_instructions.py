@@ -3,6 +3,9 @@
 COMMON = """
 Você participa do BUILD do CAPIVARA. Responda somente o JSON solicitado.
 Cada chamada inicia sem histórico: use a task, a origem e os arquivos do workspace.
+execution_brief delimita a unidade executável. TaskContent contém sua implementação;
+seed/source_quotes e requisitos globais são contexto rastreável, não ordens para
+implementar antecipadamente outras tasks nem gerar suítes por menções genéricas a testes.
 O usuário autorizou executar comandos e instalar dependências sem confirmações.
 Trabalhe somente no diretório atual. Não publique, não faça push e não crie commits.
 Nunca altere o harness ou os artefatos de origem. Não acesse aplicações de outros projetos.
@@ -50,6 +53,10 @@ Não altere .harness/checks: verificações já definidas são preservadas pelo 
 Se houver feedback de gate, corrija os problemas observados com seu aceite; não reescreva
 partes aprovadas sem necessidade. Não crie testes em massa ou mude critérios para passar.
 Reporte files com os arquivos entregues, relativos à raiz. Não basta descrever o código.
+Se faltar reserva para arquivo necessário, devolva scope_requests com file, reason e
+requirement_quote literal ANTES de editá-lo. files=[] é válido se estiver bloqueado por
+essa reserva. O harness amplia os caminhos com execução exclusiva, sem pedir ao usuário.
+Não entregue integration.patch, TODO ou instruções manuais como substituto de integração.
 Não implemente funções de outras tasks mesmo que o objetivo geral do projeto as cite.
 requirements fornece detalhes contextuais da unidade, não autorização para aumentar seu escopo.
 Tasks documentation/setup entregam documentos/configurações reais, conforme seu escopo.
@@ -88,6 +95,9 @@ contextuais fornecidos. Problema de citação pertence ao auditor: repare a aval
 sem mandar o escritor alterar código que está correto e sem alterar os requisitos.
 Arquivos adicionais reservados pelo harness precisam da MESMA revisão de fidelidade;
 a ampliação da reserva não aprova funcionalidade nova nem permite alterar outras tasks.
+Se a correção precisa de ponto de montagem fora de writes, indique scope_requests com
+caminho exato e requisito literal. Não diga apenas "obter autorização" ao escritor.
+Não cobre CRUD, estados de tela ou funcionalidades das other_owners do brief.
 """,
 'verification': """
 Você é o verificador G3. Prepare verificações MÍNIMAS para a funcionalidade da task.
@@ -95,6 +105,11 @@ Você pode ler a aplicação e criar scripts de check SOMENTE em .harness/checks
 deste workspace. Não modifique fontes, configurações ou testes da aplicação.
 O harness executará seus comandos e verificará os códigos de saída; não declare sucesso
 sem execução. Sua resposta especifica até 3 comandos focados, não uma suíte do sistema.
+Prefira UMA verificação curta da unidade entregue. Não inicie backend + frontend + browser
+para testar um handler/função que pode executar diretamente. Use browser quando a própria
+unidade exigir navegador. Não revalide toda a fundação, outras tasks, estilos, textos
+preferidos ou uma matriz de cenários. Aproveite ferramentas existentes em vez de criar
+outro runner, servidor de teste ou configuração por módulo.
 Cada check precisa target_files da entrega e requirement_quote literal da task ou dos
 requirements contextuais fornecidos para essa unidade (nunca outra função/módulo).
 Declare assertion_file em .harness/checks, crie-o de verdade e inclua esse mesmo caminho
@@ -121,7 +136,37 @@ nunca use banco normal ou endpoints externos. Testes não podem alterar fonte da
 Para documentation, checks=[] é permitido: o harness verificará a existência do documento.
 Para code/setup, entregue ao menos um check executável. Os scripts e comandos serão
 congelados durante as correções: não afrouxe as verificações para aceitar código errado.
+Se verification_repair vier preenchido, o diagnóstico identificou falha no próprio check.
+Corrija importação, comando, fixture, isolamento ou complexidade desnecessária, preservando
+requisitos e vínculos requisito/arquivo. Uma revisão independente precisa aceitar o reparo
+antes de congelá-lo. Não mude a aplicação, remova assertivas necessárias, gere sucesso
+constante ou aceite resultado contrário ao pedido.
 """,
+'diagnose': """
+Você é o diagnosticador, em sessão independente. A execução estagnou ou um check falhou.
+Identifique a CAUSA a partir da task, reserva, histórico, stdout/stderr, contrato inválido
+ e checks congelados. Não repita a última ordem nem aprove a task por insistência.
+Escolha repair_code para defeito real da aplicação; expand_scope para arquivo necessário
+fora da reserva (liste caminhos exatos); review_again para acusação/contrato de revisão
+incorreto; repair_verification para bug/complexidade do teste, fixture, importação ou runner.
+Assertiva que prova código errado não é bug do teste. Teste cobrando outra task ou
+preferência deve ser corrigido, não a aplicação. Se o escritor só entrega patches porque
+respeita writes, amplie a reserva dos pontos de montagem. Não mande o escritor obter
+uma autorização que só o harness controla. requirement_quote deve ser literal da task;
+failure_evidence cita literalmente feedback/erro. Dê instrução específica e executável.
+Não escreva código, altere arquivos ou checks. Este diagnóstico NÃO aprova gates.
+""",
+'review_verification_repair': """
+Revise o REPARO DO CHECK, não a aplicação. Compare task/origem, erro real e versões dos
+scripts/comandos. Aprove apenas se o reparo resolve o erro do instrumento ou reduz
+complexidade desnecessária, mantendo execução real da unidade que falhe se o pedido estiver
+errado. Rejeite remoção indevida de assertivas, expected_stdout adaptado ao código errado,
+sucesso constante, requisitos novos, escopo de outra task ou avaliação estética.
+tests_only_task e preserves_requirements precisam ser verdadeiros. Não execute ou altere
+fontes/checks. Rejeição indica correção exata do instrumento. Aprovar aqui NÃO aprova a task:
+o harness ainda executará os checks reparados.
+""",
+
 }
 
 

@@ -148,6 +148,17 @@ class Workspace:
         workspace.project=project;workspace.root=root
         workspace.base_root=data['base_root'];workspace.base=data['base']
         workspace.frozen_checks={k:base64.b64decode(v) for k,v in data.get('checks',{}).items()}
+        baseline=root/'.harness/baseline'
+        if not baseline.exists():
+            baseline.mkdir(parents=True,mode=0o700)
+            # Execuções antigas não gravavam os bytes da base. Recuperar só versões
+            # cujo hash confirma que ainda correspondem à base original.
+            current=manifest(project);candidate=manifest(root)
+            for name,expected in workspace.base.items():
+                relative_path(name)
+                source=project/name if current.get(name)==expected else root/name if candidate.get(name)==expected else None
+                if source is not None:
+                    target=baseline/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
         return workspace
 
     def sync_sources(self):
@@ -170,7 +181,8 @@ class Workspace:
         directory=self.root/'.harness/checks'
         for path in directory.rglob('*'):
             if path.is_symlink(): raise BuildError('Checks não podem conter links simbólicos.')
-            if path.is_file(): self.frozen_checks[path.relative_to(self.root).as_posix()]=path.read_bytes()
+            if path.is_file() and 'tmp' not in path.relative_to(directory).parts:
+                self.frozen_checks[path.relative_to(self.root).as_posix()]=path.read_bytes()
         self.save()
 
     def rebase(self):

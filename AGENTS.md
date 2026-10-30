@@ -80,6 +80,22 @@
 - Arquivos adicionais observados em uma task exigem reserva exata e execução
   exclusiva: drenar os workers, preservar/conciliar suas versões e passar G1–G3.
   Ampliar reserva não adiciona requisitos nem aprova código fora da task original.
+- Escritor e revisor podem pedir scope_requests antes de alterar um arquivo.
+  Falta de reserva não deve obrigar o escritor a gerar patches não aplicados nem
+  repetir pedidos de autorização que só o harness pode resolver.
+- Duas rejeições seguidas no mesmo gate, ausência de mudança na correção ou
+  contratos repetidamente inválidos exigem diagnóstico em contexto novo, com
+  histórico persistido. Diagnóstico resolve a causa e nunca aprova uma task.
+- Falha G3 é diagnosticada antes de culpar o código. Checks válidos permanecem
+  congelados; erro do próprio check pode ser reparado com revisão independente,
+  preservando requisitos e vínculos requisito/arquivo, seguido de execução real.
+  Arquivar versões, certificado e resultados; reparo de check não aprova gates.
+- O brief executável deriva de TaskContent e indica donos das demais unidades.
+  Citações genéricas a testes na seed não exigem suítes no G0. Usar verificações
+  mínimas da unidade; não repetir toda a aplicação/fundação nem avaliar estética.
+- O finish do AGY é protocolo de resposta estruturada quando seus parâmetros
+  correspondem ao structured_output de um resultado SUCCESS. Não confundir esse
+  retorno com uso de ferramentas; outros eventos de ferramentas continuam negados.
 - Todo artefato e status de módulos fica em `.harness` no projeto selecionado:
   logs, entrevistas (`enterviews`), prompts, contexto e controle. A aplicação
   futura pertence à raiz do projeto; todo o estado do harness fica em `.harness`.

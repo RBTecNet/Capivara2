@@ -49,8 +49,8 @@ class AutomaticBuildTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len([d for _,op,d in agents.calls if op=='write' and d['task']['id']=='P1-T001']),1)
         audits=[d for _,op,d in agents.calls if op=='fidelity' and d['task']['id']=='P1-T001']
         self.assertEqual(len(audits),7)
-        self.assertIn('trecho literal',audits[3]['contract_error'])
-        self.assertIn('Cite literalmente',audits[6]['contract_error'])
+        self.assertIn('trecho literal',audits[3]['contract_error']+json.dumps(audits[3].get('feedback',{}),ensure_ascii=False))
+        self.assertIn('Cite literalmente',audits[6]['contract_error']+json.dumps(audits[6].get('feedback',{}),ensure_ascii=False))
         self.assertTrue(all(e.tasks_approved<4 for e in events if e.stage=='format_correction'))
         self.assertEqual(read_status(self.root)['modules']['build']['status'],'completed')
 

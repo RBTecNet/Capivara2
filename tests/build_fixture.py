@@ -81,6 +81,15 @@ class Builders:
             if self.cancel:raise asyncio.CancelledError()
             await asyncio.sleep(self.delay)
             if op=='environment':return json.dumps({'dependencies':self.dependencies})
+            if op=='diagnose':
+                history=data.get('recent_failures') or []
+                failure=(history[-1]['feedback'] if history else data.get('feedback')) or {}
+                evidence=(failure.get('functional_failures') or [{}])[0].get('observed') or (failure.get('issues') or [{}])[0].get('observed') or (data.get('failed_contract') or {}).get('error') or failure.get('required_change') or failure.get('recovery_instruction') or 'A entrega não mudou'
+                action='review_again' if (data.get('failed_contract') or {}).get('operation') in ('fidelity','verification') else 'repair_code'
+                return json.dumps({'action':action,'root_cause':'A unidade ainda não atende à devolução.',
+                    'instruction':'Corrigir a função conforme o resultado pedido, preservando os checks válidos.',
+                    'requirement_quote':data['task']['content']['objective'],'required_files':[],
+                    'failure_evidence':evidence})
             if op=='blueprint':
                 tasks=[]
                 for phase in data['plan']['phases']:

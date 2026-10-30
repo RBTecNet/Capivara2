@@ -313,6 +313,33 @@ da task são devolvidas com diagnóstico para correção, com espera progressiva
 Não há encerramento após uma quantidade fixa de tentativas. Cada retorno precisa passar
 pelos mesmos gates; repetir uma falha nunca equivale a aprovar a entrega.
 
+Ao repetir duas rejeições no mesmo gate, receber correção sem mudança de código ou
+contratos repetidamente inválidos, o harness chama um diagnóstico em contexto novo.
+Ele recebe o histórico, a reserva, a origem e os checks e decide entre corrigir código,
+ampliar reserva, reavaliar uma acusação ou reparar o instrumento de teste. O ciclo de
+recuperação tem uma identificação nova para evitar reutilizar uma revisão negativa
+antiga do cache. Esse diagnóstico não aprova a task e fica persistido para retomada.
+
+Escritor e auditor podem solicitar `scope_requests` com caminhos exatos e evidência
+da necessidade antes de editar os arquivos. O scheduler reserva esses caminhos com
+execução exclusiva e devolve a task ao escritor. Isso evita o impasse em que o auditor
+exige montar uma rota, mas o escritor só pode entregar um patch porque o arquivo de
+entrada está fora de `writes`.
+
+Cada task recebe um `brief.json` derivado de seu conteúdo aprovado, com os donos das
+demais unidades. Citações e requisitos globais continuam rastreáveis, sem transformar
+uma task de estrutura na implementação de todo o CRUD ou em geração de suítes.
+G3 prefere uma verificação mínima da funcionalidade entregue; browser e integração
+ampla só quando necessários à própria unidade.
+
+Uma falha G3 passa por diagnóstico: código incorreto volta ao escritor, enquanto bug
+do check/fixture/runner pode ser corrigido pelo verificador. O reparo precisa preservar
+os vínculos entre requisitos e arquivos e receber uma revisão independente contra a
+origem e a falha observada. A aprovação do reparo é seguida de execução real; nunca
+vale como aprovação da task. Versões anteriores, propostas, certificados e resultados
+ficam em `tasks/<id>/verification-repairs`. Uma transação interrompida é retomada sem
+regenerar a aplicação nem perder a versão de check aprovada.
+
 O auditor recebe um catálogo de referências aos requisitos e trechos reais dos arquivos.
 Ao citar esses IDs, o harness preenche as citações literais, evitando erros de transcrição.
 Uma avaliação inválida é corrigida pelo auditor e não vira uma ordem de refazer código
@@ -495,6 +522,10 @@ Consulte a [configuração do OpenCode](https://opencode.ai/v2/docs/config/).
 Claude usa modo print e `--json-schema`; AGY usa o protocolo `stream-json` com uma
 mensagem por chamada e `--json-schema`. Ambos priorizam `structured_output` quando
 presente. Isso evita tentar interpretar texto repetido como dois objetos JSON.
+O evento interno `finish` do AGY é aceito como protocolo de resposta quando seus
+parâmetros correspondem ao `structured_output` de um resultado `SUCCESS`. Ele não é
+uma ação sobre arquivos ou ambiente; eventos de ferramentas reais seguem bloqueados
+nos módulos documentais.
 No documental, ferramentas são desabilitadas/negadas. No build, Claude e AGY recebem
 `--dangerously-skip-permissions`. Cada chamada abre uma sessão nova, sem continue/resume.
 Referências: [CLI do Claude](https://code.claude.com/docs/en/cli-reference),

@@ -96,7 +96,17 @@ def native_result(mode,stdout,*,allow_tools):
     error=native_error(mode,stdout)
     if error:raise ValueError(error)
     stream=events(stdout)
-    if not allow_tools and any(tool_event(e) for e in stream):
+    final_agy=next((e.get('result') for e in reversed(stream) if e.get('event')=='result' and isinstance(e.get('result'),dict)),None)
+    def structured_finish(event):
+        if mode!='agy' or not final_agy or final_agy.get('status')!='SUCCESS':return False
+        update=event.get('step_update',{})
+        if not isinstance(update,dict):return False
+        info=update.get('tool_info',{})
+        return (event.get('event')=='step_update' and update.get('step_type')=='tool'
+            and update.get('tool_name')=='finish' and isinstance(info,dict) and info.get('name')=='finish'
+            and isinstance(final_agy.get('structured_output'),dict)
+            and info.get('parameters')==final_agy['structured_output'])
+    if not allow_tools and any(tool_event(e) and not structured_finish(e) for e in stream):
         raise ValueError('O agente tentou usar ferramentas durante a execução documental.')
     if mode=='opencode':
         text=[e['part']['text'] for e in stream if e.get('type')=='text' and isinstance(e.get('part'),dict) and isinstance(e['part'].get('text'),str)]

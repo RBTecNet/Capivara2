@@ -52,9 +52,21 @@ class BuildBlueprint(DocumentModel):
     tasks: list[TaskScope]
 
 
+class ScopeRequest(DocumentModel):
+    file: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    requirement_quote: str = Field(min_length=1)
+
+
 class WriterResult(DocumentModel):
     summary: str = Field(min_length=1)
-    files: list[str] = Field(min_length=1)
+    files: list[str]
+    scope_requests: list[ScopeRequest] = Field(default_factory=list)
+
+    @model_validator(mode='after')
+    def delivery_or_request(self):
+        if not self.files and not self.scope_requests:raise ValueError('Entregue arquivos ou solicite a reserva necessária.')
+        return self
 
 
 class CodeIssue(DocumentModel):
@@ -71,10 +83,11 @@ class FidelityReview(DocumentModel):
     approved: bool
     summary: str = Field(min_length=1)
     issues: list[CodeIssue]
+    scope_requests: list[ScopeRequest] = Field(default_factory=list)
 
     @model_validator(mode='after')
     def verdict(self):
-        if self.approved == bool(self.issues):
+        if self.approved == bool(self.issues or self.scope_requests):
             raise ValueError('Aprovação não tem pendências; rejeição exige problemas observáveis e correções específicas.')
         return self
 
@@ -91,6 +104,28 @@ class VerificationSpec(DocumentModel):
     summary: str = Field(min_length=1)
     checks: list[FunctionalCheck] = Field(max_length=3)
     dependencies: list[Dependency] = Field(default_factory=list)
+
+
+class BuildDiagnosis(DocumentModel):
+    action: Literal['repair_code','expand_scope','review_again','repair_verification']
+    root_cause: str = Field(min_length=1)
+    instruction: str = Field(min_length=1)
+    requirement_quote: str = Field(min_length=1)
+    required_files: list[str]
+    failure_evidence: str = Field(min_length=1)
+
+
+class VerificationRepairReview(DocumentModel):
+    approved: bool
+    preserves_requirements: bool
+    tests_only_task: bool
+    reason: str = Field(min_length=1)
+
+    @model_validator(mode='after')
+    def no_relaxation(self):
+        if self.approved and not (self.preserves_requirements and self.tests_only_task):
+            raise ValueError('Reparo de verificação precisa preservar os requisitos e o escopo da task.')
+        return self
 
 
 class BuildResult(DocumentModel):

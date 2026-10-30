@@ -15,6 +15,7 @@ from .build_commands import run_command
 from .build_instructions import build_prompt
 from .build_models import (BuildBlueprint, EnvironmentSpec, FidelityReview, TaskScope,
                            VerificationSpec, WriterResult)
+from .build_recovery import DiagnosisPending, execution_brief, record_failure, request_scope, diagnose, repair_verification, recover_verification_repair
 from .build_workspace import Workspace, conflicts, diff, manifest, matches, relative_path, copy_project, restore_sources, sync_tree
 from .plan_models import agent_schema
 from .run_events import BuildItem, InitEvent
@@ -95,7 +96,7 @@ class BuildEngine:
             schema['$defs']['FunctionalCheck']['properties']['requirement_quote']['enum']=list(dict.fromkeys(quotes))
         context_tree=await asyncio.to_thread(manifest,cwd)
         key=self.journal.key(role,operation,dict(data,source_tree=context_tree),schema)
-        cached=self.journal.cached(key,model) if operation!='write' else None
+        cached=self.journal.cached(key,model) if operation not in ('write','verification') else None
         if cached is not None:
             try:
                 if check:check(cached)
@@ -111,7 +112,7 @@ class BuildEngine:
             self.operations=self.journal.metrics().get('operations',0)
             request=dict(data,contract_error=feedback,rejected_response=rejected,recovery_attempt=attempt)
             snapshot=None
-            if operation in ('fidelity','verification'):
+            if operation in ('fidelity','verification','diagnose','review_verification_repair'):
                 snapshot=self.store.path(f'control/audits/{call:04d}/source')
                 await asyncio.to_thread(copy_project,cwd,snapshot,runtimes=False)
                 await asyncio.to_thread(sync_tree,snapshot)
@@ -141,7 +142,7 @@ class BuildEngine:
                 feedback=f'A chamada anterior falhou: {provider_error}. Continue a operação preservando o trabalho existente.'
                 continue
             self.store.write(f'log/{role}-{call:04d}.response.txt',output)
-            if operation in ('fidelity','verification') and await asyncio.to_thread(manifest,cwd)!=context_tree:
+            if operation in ('fidelity','verification','diagnose','review_verification_repair') and await asyncio.to_thread(manifest,cwd)!=context_tree:
                 gate='G2' if operation=='fidelity' else 'G3'
                 self.journal.abandon(key,f'{gate} alterou a fonte durante a auditoria.')
                 await asyncio.to_thread(restore_sources,cwd,snapshot,snapshot.parent/'changes')
@@ -165,6 +166,12 @@ class BuildEngine:
                 self.contract_errors+=1;feedback=str(exc);rejected=output
                 self.journal.failed(key,exc)
                 if self.progress:self.checkpoint()
+                task_id=data.get('task',{}).get('id')
+                if attempt%3==0 and operation in ('write','fidelity','verification') and task_id in self.progress:
+                    p=self.progress[task_id]
+                    p.update(diagnosis_pending=True,failed_contract={'operation':operation,'error':feedback,'rejected_response':output[-6000:]})
+                    self.checkpoint()
+                    raise DiagnosisPending()
                 await self.recover('format_correction',f'{operation}: corrigindo o contrato do agente. {feedback}',attempt,data.get('task',{}).get('id'))
 
     async def recover(self,stage,message,attempt=1,task_id=None):
@@ -202,6 +209,7 @@ class BuildEngine:
             p['gates']=['completed','waiting','waiting','waiting']
             p['check_results']={}
             if rebased or not p.get('candidate_result'):
+                p['gates']=['waiting']*4
                 p.update(stage='g0',feedback={**(p.get('feedback') or {}),'scope_recovery':{
                     'additional_reserved_files':p.get('additional_reserved_files',[]),'rebased_files':rebased,
                     'rebase_directory':str(workspace.root/'.harness/rebase'),
@@ -352,6 +360,7 @@ class BuildEngine:
                 if p:
                     self.store.json(f'tasks/{key}/history/{self.store.run_id}.json',p)
                 self.progress[key]={'gates':['waiting']*4,'completed':False,'started':False,'attempts':0,'stage':'g0'}
+        for key in self.tasks:self.store.json(f'tasks/{key}/brief.json',execution_brief(self,key))
         self.saved['accepted_tree']=current
         self.checkpoint()
 
@@ -376,15 +385,23 @@ class BuildEngine:
         finally:self.scopes=saved
 
     def code_context(self,key,workspace,feedback):
-        return {'task':self.tasks[key],'scope':self.scopes[key].model_dump(),
+        return {'task':self.tasks[key],'execution_brief':execution_brief(self,key),'scope':self.scopes[key].model_dump(),
             'objective':self.source['init']['document']['objective'],
             'requirements':[text for i,text in enumerate(self.source['init']['document']['requirements'],1)
                             if f'R{i:03d}' in self.scopes[key].requirement_ids],
             'constraints':self.source['init']['document']['constraints'],
             'stack':self.source['init']['document']['stack'],'feedback':feedback,
             'workspace':str(workspace.root),
+            'recovery_epoch':self.progress[key].get('diagnosis_sequence',0),
             'baseline_directory':str(workspace.root/'.harness/baseline'),
             'additional_reserved_files':self.progress[key].get('additional_reserved_files',[])}
+
+    def validate_scope_requests(self,requests,key,workspace,feedback):
+        source='\n'.join(requirement_quotes(self.code_context(key,workspace,feedback)))
+        for request in requests:
+            relative_path(request.file)
+            if request.requirement_quote not in source:
+                raise ValueError('A solicitação de reserva deve citar literalmente uma necessidade da task atual.')
 
     def reject(self,key,gate,feedback,workspace):
         identity=feedback
@@ -398,10 +415,12 @@ class BuildEngine:
         if self.rejections[signature]>1:
             feedback=dict(feedback,repeated_conflict=self.rejections[signature],
                 recovery_instruction='A correção anterior não satisfez o mesmo aceite. Inspecione a causa, aplique uma mudança efetiva e preserve os checks congelados; não basta repetir a resposta.')
+        record_failure(self,key,gate,feedback,manifest(workspace.root))
         self.corrections+=1
+        self.progress[key]['rejection_sequence']=self.progress[key].get('rejection_sequence',0)+1
         self.progress[key].update(feedback=feedback,before_failed=manifest(workspace.root),stage='g0',check_results={})
         self.gate(key,gate,'waiting' if gate==1 else 'rejected')
-        self.store.json(f'tasks/{key}/rejection-{self.progress[key]["attempts"]}.json',{'gate':gate,'feedback':feedback})
+        self.store.json(f'tasks/{key}/rejection-{self.progress[key]["attempts"]}-{self.progress[key]["rejection_sequence"]}.json',{'gate':gate,'feedback':feedback})
 
     async def task_run(self,key):
         scope=self.scopes[key];p=self.progress[key]
@@ -416,6 +435,7 @@ class BuildEngine:
                     p.update(workspace=str(workspace.root),stage='g0');self.checkpoint()
                     raise
             p.update(workspace=str(workspace.root),stage='g0');self.checkpoint()
+        recover_verification_repair(self,key,workspace)
         feedback=p.get('feedback')
         verification=VerificationSpec.model_validate(p['verification']) if p.get('verification') else None
         before_failed=p.get('before_failed')
@@ -424,6 +444,19 @@ class BuildEngine:
             p.update(stage='g0',gates=['waiting']*4,check_results={})
         if p.get('stage')=='scope_repair':await self.reserve_extra_files(key,workspace)
         while True:
+            if p.get('diagnosis_pending'):
+                decision=await diagnose(self,key,workspace)
+                if decision.action=='expand_scope' or any(not matches(f,scope.writes) for f in decision.required_files):
+                    request_scope(self,key,decision.required_files,decision.root_cause)
+                    raise ScopeExpansionPending()
+                if decision.action=='repair_verification':
+                    p['probe_repair_pending']=True
+                    p['stage']='g3'
+                elif decision.action=='review_again' and p.get('writer_result') and p.get('files') and await asyncio.to_thread(manifest,workspace.root)==p.get('tested_tree'):
+                    p['stage']='g2'
+                else:
+                    p['stage']='g0';p['probe_repair_pending']=False
+                self.checkpoint()
             feedback=p.get('feedback');before_failed=p.get('before_failed')
             if p.get('stage','g0')=='g0':
                 p['attempts']+=1
@@ -432,7 +465,13 @@ class BuildEngine:
                 workspace.restore_checks()
                 def validate_delivery(value):
                     for name in value.files:relative_path(name)
+                    self.validate_scope_requests(value.scope_requests,key,workspace,feedback)
                 result=await self.invoke('writer','write',self.code_context(key,workspace,feedback),WriterResult,workspace.root,validate_delivery)
+                if result.scope_requests:
+                    files=[r.file for r in result.scope_requests if not matches(r.file,scope.writes)]
+                    if files:
+                        request_scope(self,key,files,result.summary)
+                        raise ScopeExpansionPending()
                 p['candidate_result']=result.model_dump()
                 changes,tree=await asyncio.to_thread(workspace.changes)
                 extras=list(dict.fromkeys(relative_path(name) for name in [*changes,*result.files] if not matches(name,scope.writes)))
@@ -445,6 +484,8 @@ class BuildEngine:
                 changes,tree=await asyncio.to_thread(workspace.audit,scope)
                 if feedback and (feedback.get('issues') or feedback.get('functional_failures')) and tree==before_failed:
                     p['feedback']=dict(feedback,recovery_instruction='A entrega não mudou após a devolução. Inspecione os arquivos reais e corrija a causa indicada, sem alterar o aceite ou os testes.')
+                    record_failure(self,key,0,p['feedback'],tree)
+                    p['diagnosis_pending']=True
                     self.checkpoint()
                     await self.recover('writer_recovery',f'{key}: escritor precisa aplicar a correção ao código.',p['attempts'],key)
                     continue
@@ -480,9 +521,11 @@ class BuildEngine:
                 def validate_fidelity(value):
                     task=self.tasks[key]
                     source='\n'.join(requirement_quotes(self.code_context(key,workspace,feedback)))
+                    self.validate_scope_requests(value.scope_requests,key,workspace,feedback)
+                    requested={r.file for r in value.scope_requests}
                     for issue in value.issues:
                         name=relative_path(issue.file)
-                        if not matches(name,scope.writes):raise ValueError('G2 só pode apontar arquivos da responsabilidade desta task.')
+                        if not matches(name,scope.writes) and name not in requested:raise ValueError('G2 só pode apontar arquivos da responsabilidade desta task.')
                         if issue.requirement_quote not in source:raise ValueError('Cite literalmente um requisito da task/origem, sem inventar exigências.')
                         path=workspace.root/name
                         if issue.missing:
@@ -492,6 +535,12 @@ class BuildEngine:
                 review=await self.invoke('reviewer','fidelity',{**self.code_context(key,workspace,feedback),'delivered_files':files,'changed_files':changes},FidelityReview,workspace.root,validate_fidelity)
                 if await asyncio.to_thread(manifest,workspace.root)!=immutable:
                     raise BuildError(f'{key}: G2 alterou a fonte em vez de somente auditá-la.')
+                if review.scope_requests:
+                    files=[r.file for r in review.scope_requests if not matches(r.file,scope.writes)]
+                    if files:
+                        p['feedback']={'issues':[i.model_dump() for i in review.issues]}
+                        request_scope(self,key,files,review.summary)
+                        raise ScopeExpansionPending()
                 if not review.approved:
                     feedback={'issues':[i.model_dump() for i in review.issues]}
                     self.reject(key,2,feedback,workspace);before_failed=tree;await self.recover('task_recovery',f'{key}: corrigindo a entrega conforme o gate.',p['attempts'],key);continue
@@ -499,7 +548,7 @@ class BuildEngine:
                 self.gate(key,2,'completed')
             review=FidelityReview.model_validate(p['fidelity_review'])
             self.gate(key,3,'running')
-            if verification is None:
+            if verification is None or p.get('probe_repair_pending'):
                 def validate_checks(value):
                     if scope.kind!='documentation' and not value.checks:raise ValueError('Código/setup exige ao menos uma verificação funcional executável.')
                     task=self.tasks[key]
@@ -530,8 +579,13 @@ class BuildEngine:
                             raise ValueError('Declare assertion_file executável com assertivas ou expected_stdout para conferir resultado real.')
                         elif not any(Path(target).stem in ' '.join(check.command.argv) or target in check.command.argv for target in check.target_files):
                             raise ValueError('A execução com expected_stdout deve chamar a unidade entregue.')
-                verification=await self.invoke('reviewer','verification',{**self.code_context(key,workspace,feedback),
-                    'delivered_files':files,'scratch_directory':'.harness/checks','tools_directory':str(self.store.path('tools'))},VerificationSpec,workspace.root,validate_checks)
+                data={**self.code_context(key,workspace,feedback),'delivered_files':files,
+                    'scratch_directory':'.harness/checks','tools_directory':str(self.store.path('tools'))}
+                if p.get('probe_repair_pending') and verification is not None:
+                    verification=await repair_verification(self,key,workspace,verification,data,validate_checks)
+                else:
+                    verification=await self.invoke('reviewer','verification',{**self.code_context(key,workspace,feedback),
+                        'delivered_files':files,'scratch_directory':'.harness/checks','tools_directory':str(self.store.path('tools'))},VerificationSpec,workspace.root,validate_checks)
                 if await asyncio.to_thread(manifest,workspace.root)!=immutable:
                     raise BuildError(f'{key}: o verificador G3 alterou código da aplicação para preparar os testes.')
                 workspace.freeze_checks()
@@ -546,12 +600,14 @@ class BuildEngine:
                     await self.ensure_dependencies(verification.dependencies,tools)
             workspace.restore_checks()
             await asyncio.to_thread(workspace.clear_bytecode)
+            probe_source=self.store.path(f'control/probe-source/{key}-{p["attempts"]}-{p.get("verification_revision",0)}')
+            await asyncio.to_thread(copy_project,workspace.root,probe_source,runtimes=False)
             failures=[]
             for index,check in enumerate(verification.checks,1):
                 outcome=p.setdefault('check_results',{}).get(str(index))
                 if outcome is None:
                     outcome=await run_command(check.command,workspace.root,self.store,
-                        f'log/{self.store.run_id}-{key}-g3-{p["attempts"]}-{index}',test=True)
+                        f'log/{self.store.run_id}-{key}-g3-{p["attempts"]}-v{p.get("verification_revision",0)}-{index}',test=True)
                     p['check_results'][str(index)]=outcome;self.checkpoint()
                 if outcome['exit_code']!=0 or (check.expected_stdout is not None and outcome['stdout'].strip()!=check.expected_stdout.strip()):
                     failures.append({'command':check.command.model_dump(),'exit_code':outcome['exit_code'],
@@ -560,7 +616,12 @@ class BuildEngine:
                         'required_change':'Corrija a implementação para atender a verificação funcional congelada.',
                         'acceptance':check.requirement_quote})
             if await asyncio.to_thread(manifest,workspace.root)!=immutable:
-                raise BuildError(f'{key}: os testes modificaram a fonte da aplicação; nenhuma alteração será integrada.')
+                await asyncio.to_thread(restore_sources,workspace.root,probe_source,probe_source.parent/(probe_source.name+'-changes'))
+                await asyncio.to_thread(workspace.sync_sources)
+                p['diagnosis_pending']=True
+                p['failed_contract']={'operation':'checks','error':'Os testes modificaram a fonte da aplicação; diagnostique o isolamento da verificação.'}
+                self.checkpoint()
+                raise DiagnosisPending()
             if failures:
                 feedback={'functional_failures':failures}
                 self.reject(key,3,feedback,workspace);before_failed=tree;await self.recover('task_recovery',f'{key}: corrigindo a entrega conforme o gate.',p['attempts'],key);continue
@@ -612,7 +673,7 @@ class BuildEngine:
                 for future in done:
                     key=running.pop(future)
                     try:await future
-                    except ScopeExpansionPending:pending.add(key)
+                    except (ScopeExpansionPending,DiagnosisPending):pending.add(key)
                     except DependenciesBlocked:raise
                     except BuildError as exc:
                         p=self.progress[key]
