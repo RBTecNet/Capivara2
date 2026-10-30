@@ -1,4 +1,4 @@
-# Catálogo; OpenCode consulta metadados do CLI autenticado sob demanda.
+# Catálogo; OpenCode, Claude e AGY consultam metadados dos CLIs sob demanda.
 # "default" representa usar o padrão do CLI, sem escolher um modelo específico.
 # Cadastre os IDs e efforts reais que deseja disponibilizar na TUI.
 
@@ -9,6 +9,7 @@ read_local_cache = true
 models = [{ id = "default", name = "Padrão do CLI", efforts = ["default"] }]
 
 [providers.claude]
+discover_cli = true
 models = [{ id = "default", name = "Padrão do CLI", efforts = ["default"] }]
 
 [providers.opencode]
@@ -16,4 +17,5 @@ discover_cli = true
 models = [{ id = "default", name = "Padrão do CLI", efforts = ["default"] }]
 
 [providers.agy]
+discover_cli = true
 models = [{ id = "default", name = "Padrão do CLI", efforts = ["default"] }]

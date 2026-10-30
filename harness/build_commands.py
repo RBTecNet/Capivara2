@@ -12,7 +12,7 @@ async def run_command(spec,cwd,store,prefix, *, test=False):
     env=dict(os.environ) if not test else {k:v for k,v in os.environ.items()
         if k in ('PATH','HOME','LANG','LC_ALL','DISPLAY','WAYLAND_DISPLAY','XDG_RUNTIME_DIR','PLAYWRIGHT_BROWSERS_PATH')}
     env.update({v.name:v.value for v in spec.env})
-    env.update(CI='1',PIP_NO_INPUT='1',GIT_TERMINAL_PROMPT='0',DEBIAN_FRONTEND='noninteractive',NO_COLOR='1')
+    env.update(PWD=str(cwd.resolve()),CI='1',PIP_NO_INPUT='1',GIT_TERMINAL_PROMPT='0',DEBIAN_FRONTEND='noninteractive',NO_COLOR='1')
     if test:
         env['PYTHONDONTWRITEBYTECODE']='1'
         import socket

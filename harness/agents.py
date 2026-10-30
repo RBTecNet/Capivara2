@@ -8,6 +8,7 @@ import signal
 
 from .artifacts import ArtifactStore, InitError
 from .domain import AgentSelection, PROVIDERS
+from .cli_protocols import opencode_document_config, agy_command, native_error, native_result
 
 
 class AgentError(InitError):
@@ -43,20 +44,18 @@ class CLIAgents:
             return command + ["-"], "codex"
         if provider == "claude":
             command = ["claude", "-p", "--output-format", "json", "--json-schema", json.dumps(schema),
-                       "--tools", "", "--disallowedTools", "*", "--strict-mcp-config",
+                       "--tools", "", "--strict-mcp-config",
                        "--mcp-config", '{"mcpServers":{}}', "--settings", '{"disableAllHooks":true}',
-                       "--setting-sources", "", "--no-session-persistence"]
+                       "--setting-sources", "", "--disable-slash-commands", "--no-session-persistence"]
             if selection.model != "default":
                 command.extend(["--model", selection.model])
             if selection.effort != "default":
                 command.extend(["--effort", selection.effort])
             return command, "claude"
         if provider == "opencode":
-            # Agente V2 dedicado; as permissões impedem comandos, leitura e escrita.
-            store.json("control/work/.opencode/opencode.json", {
-                "agents": {"capivara-documentation": {"mode": "primary", "system": "Gere somente o JSON documental solicitado, sem ferramentas.",
-                            "permissions": [{"action": "*", "resource": "*", "effect": "deny"}]}},
-                "policies": [{"action": "tool.use", "resource": "*", "effect": "deny"}]})
+            try:opencode_document_config(store,env)
+            except (ValueError,TypeError) as exc:
+                raise AgentError('A configuração inline do OpenCode não pôde receber o agente documental. Confira OPENCODE_CONFIG_CONTENT.') from exc
             command = ["opencode", "run", "--standalone", "--format", "json", "--agent", "capivara-documentation"]
             if selection.model != "default":
                 model = selection.model
@@ -66,6 +65,8 @@ class CLIAgents:
             elif selection.effort != "default":
                 raise AgentError("Selecione um modelo explícito do OpenCode para aplicar um effort.")
             return command, "opencode"
+        if provider == "agy":
+            return agy_command(selection,schema,allow_tools=False)
         raise AgentError(f"Configure agents.{provider}.command no catálogo para usar o CLI {PROVIDERS.get(provider, provider)} nos módulos documentais.")
 
     async def generate(self, selection: AgentSelection, role: str, prompt: str, schema: dict,
@@ -78,7 +79,7 @@ class CLIAgents:
         output = store.path(prefix + ".last.txt")
         work = cwd or store.path("control/work")
         work.mkdir(parents=True, mode=0o700, exist_ok=True)
-        env = dict(os.environ, CAPIVARA2_ROLE=role, CAPIVARA2_MODEL=selection.model,
+        env = dict(os.environ, PWD=str(work.resolve()), CAPIVARA2_ROLE=role, CAPIVARA2_MODEL=selection.model,
                    CAPIVARA2_EFFORT=selection.effort, CAPIVARA2_SCHEMA=str(store.path(prefix + ".schema.json")),
                    CAPIVARA2_OUTPUT=str(output), NO_COLOR="1",
                    CAPIVARA2_EXECUTION="build" if allow_tools else "document",
@@ -144,6 +145,8 @@ class CLIAgents:
             raise AgentError(f"Falha na comunicação com o CLI. Consulte os logs em {log_root}/log.") from None
         stdout = b"".join(stdout_parts).decode("utf-8", errors="replace")
         if process.returncode != 0:
+            detail=native_error(mode,stdout) if mode in ('claude','opencode','agy') else None
+            if detail:raise AgentError(f"{PROVIDERS[selection.provider]}: {detail}. Logs: {log_root}/{prefix}.stdout.log.")
             raise AgentError(f"{PROVIDERS[selection.provider]} encerrou com código {process.returncode}. Consulte {log_root}/{prefix}.stderr.log.")
         if mode == "codex":
             for line in stdout.splitlines():
@@ -157,39 +160,8 @@ class CLIAgents:
             if not output.is_file():
                 raise AgentError("O Codex não entregou uma resposta final. Consulte os logs da chamada.")
             return output.read_text(encoding="utf-8")
-        if mode == "claude":
-            try:
-                result = json.loads(stdout)
-                if result.get("is_error"):
-                    raise ValueError()
-                structured = result.get("structured_output")
-                return json.dumps(structured, ensure_ascii=False) if isinstance(structured, dict) else result["result"]
-            except (ValueError, KeyError, TypeError):
-                raise AgentError("O Claude não entregou uma resposta documental válida. Consulte os logs.") from None
-        if mode == "opencode":
-            parts = []
-            for line in stdout.splitlines():
-                try:
-                    event = json.loads(line)
-                except ValueError:
-                    continue
-                if not allow_tools and event.get("type") in ("tool_use", "tool_call"):
-                    raise AgentError("O OpenCode tentou usar ferramentas durante a execução documental.")
-                part = event.get("part", {})
-                if event.get("type") == "text" and isinstance(part.get("text"), str):
-                    parts.append(part["text"])
-                elif event.get("type") == "error":
-                    raise AgentError("O OpenCode informou uma falha. Consulte os logs da chamada.")
-            return "\n".join(parts) if parts else stdout
-        if mode == "agy":
-            result = None
-            for line in stdout.splitlines():
-                try:
-                    event = json.loads(line)
-                except ValueError:
-                    continue
-                if event.get("event") == "result": result = event.get("result", {})
-            if not result or result.get("status", "SUCCESS") != "SUCCESS" or not isinstance(result.get("response"), str):
-                raise AgentError("O AGY não entregou uma resposta final de build válida. Consulte os logs.")
-            return result["response"]
+        if mode in ('claude','opencode','agy'):
+            try:return native_result(mode,stdout,allow_tools=allow_tools)
+            except ValueError as exc:
+                raise AgentError(f"{PROVIDERS[selection.provider]}: {exc} Logs: {log_root}/{prefix}.stdout.log.") from None
         return stdout

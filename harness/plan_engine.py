@@ -5,6 +5,7 @@ import json
 import re
 
 from .artifacts import InitError, digest
+from .agents import AgentError
 from .plan_artifacts import PlanStore, load_init
 from .plan_control import IssueLedger, prepare_changes, stub, version, structure_version
 from .plan_classification import source_activities, check_classification, classified_requirements
@@ -133,7 +134,8 @@ class PlanEngine:
                     return candidate
             except ValueError:pass
         feedback=record.get('error','')
-        for attempt in range(max_attempts):
+        attempt = provider_failures = 0
+        while attempt < max_attempts:
             self.call_id=self.journal.next_call()
             response_path=f"log/{role}-{self.call_id:04d}.response.txt"
             self.journal.start(key,role=role,operation=task,data=data,response=response_path)
@@ -154,6 +156,15 @@ class PlanEngine:
                 self.emit("agent_cancelled")
                 self.journal.failed(key,"Operação interrompida antes da conclusão.")
                 raise
+            except AgentError as exc:
+                self.active_role = None
+                self.emit("agent_failed")
+                self.journal.failed(key, exc)
+                provider_failures += 1
+                feedback = f"A chamada anterior do CLI falhou: {exc}. Repita somente esta operação."
+                self.announce("agent_recovery", f"Recuperação automática do agente: {exc}")
+                await asyncio.sleep(min(0.25 * 2 ** min(provider_failures - 1, 6), 15))
+                continue
             except Exception as exc:
                 self.active_role = None
                 self.emit("agent_failed")
@@ -185,7 +196,8 @@ class PlanEngine:
                 self.store.event("format_correction", "Contrato documental devolvido ao agente.",
                                  role=role, call=self.call_id, detail=feedback)
                 self.emit("format_correction")
-                if attempt + 1 == max_attempts:
+                attempt += 1
+                if attempt == max_attempts:
                     raise PlanContractError(f"{task}: resposta ainda inválida após uma oportunidade de corrigir o contrato. {feedback}") from exc
 
     async def classify(self):

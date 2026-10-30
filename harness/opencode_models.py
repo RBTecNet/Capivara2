@@ -37,12 +37,12 @@ def parse_model_lines(text):
     return tuple(Model(identifier,identifier.split('/',1)[1],('default',)) for identifier in ids)
 
 
-async def query(argv,cwd,timeout=20):
-    process=await asyncio.create_subprocess_exec(*argv,cwd=cwd,stdin=asyncio.subprocess.DEVNULL,
+async def query(argv,cwd,timeout=20,*,input_text=None,provider_name="OpenCode"):
+    process=await asyncio.create_subprocess_exec(*argv,cwd=cwd,stdin=asyncio.subprocess.PIPE if input_text is not None else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE,start_new_session=True,
-        env=dict(os.environ,NO_COLOR='1',CI='1'))
+        env=dict(os.environ,PWD=str(cwd.resolve()),NO_COLOR='1',CI='1'))
     try:
-        stdout,_=await asyncio.wait_for(process.communicate(),timeout)
+        stdout,_=await asyncio.wait_for(process.communicate(input_text.encode() if input_text is not None else None),timeout)
     except (asyncio.CancelledError,TimeoutError):
         if process.returncode is None:
             try:os.killpg(process.pid,signal.SIGTERM)
@@ -53,7 +53,7 @@ async def query(argv,cwd,timeout=20):
                 except ProcessLookupError:pass
                 await process.wait()
         raise
-    if process.returncode:raise ValueError('O CLI OpenCode não conseguiu consultar os modelos. Confira sua conexão/autenticação.')
+    if process.returncode:raise ValueError(f'O CLI {provider_name} não conseguiu consultar os modelos. Confira sua conexão/autenticação.')
     return stdout.decode('utf-8',errors='replace')
 
 

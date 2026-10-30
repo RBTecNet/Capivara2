@@ -82,15 +82,21 @@ class Catalog:
             if provider not in PROVIDERS or not isinstance(command, list) or not command or any(not isinstance(arg,str) or not arg for arg in command):
                 raise ValueError("Cada build_agents.<provedor>.command deve ser uma lista explícita de programa e argumentos.")
             build_commands[provider] = tuple(command)
-        opencode=providers.get('opencode',{})
-        configured=models.get('opencode',())
-        automatic=opencode.get('discover_cli',not configured or all(m.id=='default' for m in configured))
-        return cls(path, models, sources, commands, build_commands, {'opencode':bool(automatic)})
+        discovery={}
+        for provider in ('opencode','claude','agy'):
+            configured=models.get(provider,())
+            automatic=providers.get(provider,{}).get('discover_cli',not configured or all(m.id=='default' for m in configured))
+            if not isinstance(automatic,bool):raise ValueError(f'providers.{provider}.discover_cli deve ser true ou false.')
+            discovery[provider]=automatic
+        return cls(path, models, sources, commands, build_commands, discovery)
 
     async def discover_models(self,provider,project_dir):
         if provider=='opencode' and self.discovery.get(provider):
             from .opencode_models import discover
             self.models[provider],self.sources[provider]=await discover(project_dir)
+        elif provider in ('claude','agy') and self.discovery.get(provider):
+            from .provider_models import discover
+            self.models[provider],self.sources[provider]=await discover(provider,project_dir)
 
 
 def read_codex_cache() -> tuple[Model, ...]:

@@ -3,6 +3,7 @@
 import json
 
 from .agents import AgentError
+from .cli_protocols import agy_command
 
 
 def build_command(selection, schema, output, schema_file, cwd):
@@ -21,12 +22,12 @@ def build_command(selection, schema, output, schema_file, cwd):
         command = ['claude','-p','--dangerously-skip-permissions','--output-format','json',
             '--json-schema',json.dumps(schema),'--no-session-persistence','--strict-mcp-config',
             '--mcp-config','{"mcpServers":{}}','--settings','{"disableAllHooks":true}',
-            '--setting-sources','','--disallowedTools','Agent']
+            '--setting-sources','','--disable-slash-commands','--disallowedTools','Agent,Task']
         if selection.model != 'default': command += ['--model',selection.model]
         if selection.effort != 'default': command += ['--effort',selection.effort]
         return command,'claude'
     if provider == 'opencode':
-        command = ['opencode','run','--standalone','--auto','--format','json']
+        command = ['opencode','run','--standalone','--auto','--format','json','--agent','build']
         if selection.model != 'default':
             model = selection.model
             if selection.effort != 'default': model=model.split('#',1)[0]+'#'+selection.effort
@@ -35,9 +36,5 @@ def build_command(selection, schema, output, schema_file, cwd):
             raise AgentError('Selecione um modelo explícito do OpenCode para aplicar effort no build.')
         return command,'opencode'
     if provider == 'agy':
-        command = ['agy','--input-format','stream-json','--output-format','stream-json',
-                   '--dangerously-skip-permissions','--json-schema',json.dumps(schema)]
-        if selection.model != 'default': command += ['--model',selection.model]
-        if selection.effort != 'default': command += ['--effort',selection.effort]
-        return command,'agy'
+        return agy_command(selection,schema,allow_tools=True)
     raise AgentError(f'CLI não suportado no build: {provider}.')

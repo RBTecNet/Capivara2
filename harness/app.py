@@ -372,7 +372,7 @@ class HarnessApp(App[WizardState]):
     async def load_models(self,screen,provider):
         menu=screen.query_one(OptionList);menu.disabled=True
         screen.error("")
-        screen.query_one("#hint",Static).update("Consultando modelos e variantes do OpenCode…")
+        screen.query_one("#hint",Static).update(f"Consultando modelos e efforts do {PROVIDERS[provider]}…")
         try:
             await self.catalog.discover_models(provider,self.state.project_dir)
             if screen.is_current:self.show_models(screen,provider)

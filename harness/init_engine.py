@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from .agents import CLIAgents
 from .artifacts import ArtifactStore, InitError, digest
+from .agents import AgentError
 from .domain import WizardState
 from .init_instructions import REVIEWER, WRITER
 from .init_models import Answer, FinalPrompt, Gap, Interview, Question, Review
@@ -66,6 +67,7 @@ class InitEngine:
         history = self.store.read_json(context_path, {"role": role, "selection": asdict(selection), "messages": []})
         request = {"task": task, "data": data}
         feedback = ""
+        provider_failures = 0
         while True:
             self.call_id += 1
             self.active_role = self.last_role = role
@@ -80,6 +82,14 @@ class InitEngine:
                 self.active_role = None
                 self.emit("agent_cancelled")
                 raise
+            except AgentError as exc:
+                self.active_role = None
+                self.emit("agent_failed")
+                provider_failures += 1
+                feedback = f"A chamada anterior do CLI falhou: {exc}. Repita somente esta operação."
+                self.announce("agent_recovery", f"Recuperação automática do agente: {exc}")
+                await asyncio.sleep(min(0.25 * 2 ** min(provider_failures - 1, 6), 15))
+                continue
             except Exception:
                 self.active_role = None
                 self.emit("agent_failed")

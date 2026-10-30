@@ -64,6 +64,14 @@
 - Falhas de agentes/comandos são recuperáveis na TUI. Persistir checkpoints,
   respostas e operações de integração antes de avançar gates; aprovações não
   podem ser inferidas por retomada. Modelos OpenCode vêm do CLI autenticado.
+- OpenCode, Claude e AGY usam os protocolos dos CLIs instalados e catálogos
+  consultados sem inferência. Não inventar modelos ou efforts. Respostas estruturadas
+  prevalecem sobre texto duplicado; erros nativos nunca contam como resposta válida.
+- Definir cwd e PWD do processo filho para a mesma pasta do workspace. Configuração
+  documental do OpenCode é efêmera e explícita no ambiente, com ferramentas negadas.
+  Credenciais herdadas ficam somente no ambiente; não exportar para arquivos ou logs.
+- O projeto antigo NovoHarness/capivara serve apenas de consulta de wizard/chamadas
+  aos modelos, conforme autorização do usuário. Não importar seu código ou arquitetura.
 - No build, erros recuperáveis de contrato, citação, comunicação e reserva não
   encerram o módulo nem dependem do botão tentar novamente. Corrigir automaticamente
   com evidência, logs e espera cancelável, sem limite de tentativas nem aprovação

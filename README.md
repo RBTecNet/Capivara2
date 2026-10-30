@@ -458,12 +458,19 @@ o último catálogo válido pode ser usado; sem catálogo válido, a tela inform
 e permite tentar novamente. Para usar apenas uma lista manual, configure
 `discover_cli = false` em `[providers.opencode]` e preencha `models`.
 
-Claude e agy continuam começando com “Padrão do CLI”. O identificador `default` representa
-deixar que o CLI escolha o padrão, sem presumir um ID de modelo ou effort.
-Cadastre os modelos reais que deseja listar, por exemplo:
+Claude consulta o catálogo do próprio CLI pelo handshake `initialize`, sem enviar um
+prompt de inferência. O wizard usa os IDs resolvidos e os `supportedEffortLevels`
+informados pelo processo. AGY consulta `agy models`, agrupa as variantes da mesma
+família e apresenta apenas os efforts encontrados nessa listagem. Não há uma lista
+fixa de aliases/modelos. Essas consultas mantêm cache breve somente de ID, nome e efforts.
+Uma consulta ao catálogo não prova que a conta está autenticada ou tem saldo para gerar.
+
+Para uma lista manual, use `discover_cli = false` no provedor e cadastre os modelos.
+O identificador `default` deixa o CLI escolher o padrão, por exemplo:
 
 ```toml
 [providers.claude]
+discover_cli = false
 models = [
   { id = "seu-modelo", name = "Nome exibido", efforts = ["low", "high"] },
 ]
@@ -479,10 +486,30 @@ Para usar outro arquivo de configuração:
 capivara2 --config /caminho/harness.toml
 ```
 
-Há adaptadores nativos para Codex, Claude e OpenCode V2. A validação real desta
-etapa usa Codex; os demais exigem suas próprias configurações e autenticações.
-O comando não interativo específico do agy precisa ser configurado. Também é
-possível substituir qualquer adaptador com um comando explícito, sem shell:
+Há adaptadores nativos para Codex, Claude, OpenCode V2 e AGY nos módulos documentais
+e no build. OpenCode recebe o agente documental por configuração efêmera explícita,
+com ferramentas negadas; o build seleciona o agente nativo `build` e usa `--auto`.
+Isso evita depender da descoberta de um agente em uma pasta ignorada pelo Git.
+Consulte a [configuração do OpenCode](https://opencode.ai/v2/docs/config/).
+
+Claude usa modo print e `--json-schema`; AGY usa o protocolo `stream-json` com uma
+mensagem por chamada e `--json-schema`. Ambos priorizam `structured_output` quando
+presente. Isso evita tentar interpretar texto repetido como dois objetos JSON.
+No documental, ferramentas são desabilitadas/negadas. No build, Claude e AGY recebem
+`--dangerously-skip-permissions`. Cada chamada abre uma sessão nova, sem continue/resume.
+Referências: [CLI do Claude](https://code.claude.com/docs/en/cli-reference),
+[headless do AGY](https://antigravity.google/docs/cli/headless/).
+
+Todos os processos recebem `cwd` e `PWD` apontando para a pasta escolhida da operação,
+inclusive consultas de modelos e comandos do build. Erros estruturados do CLI são
+diagnosticados mesmo com exit code zero e nunca são aceitos como resposta documental.
+Falhas de transporte dos CLIs são tentadas novamente também no init/plan, com espera
+cancelável; no plan, essas falhas não consomem as oportunidades de reparo documental.
+
+É necessário instalar e autenticar os CLIs que serão usados. Para Claude, execute
+`claude auth login` quando o CLI informar que não há sessão autenticada. A autenticação
+continua no armazenamento privado do provedor. Também é possível substituir qualquer
+adaptador com um comando explícito, sem shell:
 
 ```toml
 [agents.agy]
