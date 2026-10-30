@@ -32,7 +32,9 @@ install=[] e explique exatamente o pacote, a versão se exigida e a instalação
 Não invente disponibilidade. Não coloque tokens/credenciais nos comandos.
 """,
 'blueprint': """
-Organize as tasks EXISTENTES do plan, preservando cada ID, fase, ordem e dependências.
+Organize SOMENTE a task recebida. available_tasks contém apenas IDs para declarar
+dependências; não é outra entrega para implementar ou revisar. O controlador reúne os
+escopos individuais, preservando cada ID, fase, ordem e dependências.
 Para cada task, defina tipo code/setup/documentation, writes, reads e depends_on entre
 IDs. Os caminhos são relativos ao projeto. Use arquivos exatos ou prefixos como
 src/modules/tarefas/**. Não use .harness/.git como saída de aplicação. Se não for possível

@@ -86,16 +86,9 @@ CONCRETA de consolidação, indicando o ID/versão ausente ou divergente em reas
 ausência de funcionalidades a partir de títulos resumidos: os corpos já foram comparados
 com a origem nas revisões individuais e coletivas. Esta operação não envia reescritas.
 """,
-'review_plan': """
-Compare o plano completo à finalidade original, requisitos, fases e integração entre elas.
-Use as aprovações por versão: procure omissões ou contradições de conjunto, não reescreva
-tasks intactas por estilo nem reabra contratos já cumpridos. Referências de QA pertencem
-ao build e não delimitam os testes que ele decidirá. A aprovação nunca é por tentativas.
-Se necessário, forneça contratos concretos de conteúdo ou operações estruturais válidas
-como na revisão coletiva. Não exponha ações individuais de reavaliação ou delegações.
-""",
-'reassess_phase': """
-Resolva o problema estrutural apontado. Devolva split/merge/remove concretos ou additions,
+'reassess_task': """
+Resolva somente o problema estrutural da task recebida. Nenhuma outra entrega é sua
+responsabilidade. Devolva split/remove concretos ou additions,
 com seeds, coverage e citações válidos, preservando os donos da classificação aprovada.
 Nunca mande o escritor “reavaliar a fase” e não devolva correções de conteúdo nesta operação.
 Se a reclamação estrutural era incorreta, decisions pode confirmar o escopo da task com
@@ -119,22 +112,10 @@ se a proposta anterior foi rejeitada; não devolva instruções vagas ao escrito
 """,
 }
 
-COLLECTIVE_CONTRACT = """
-Cada correção de conteúdo deve ter task_id, base_version de approved_versions, category
-fidelity/coverage/test_strategy, reason/instruction, evidence literal dos requisitos atribuídos,
-changes por campo com before/after exatos e acceptance contains/excludes por campo alterado.
-O aceite deve estar falso antes e verdadeiro depois. Agrupe todos os defeitos da mesma task
-num contrato único. Não altere seeds em correções de conteúdo; para isso use operações estruturais.
-A evidência deve citar ao menos um requisito ATRIBUÍDO à task. Requisitos Rxxx servem
-para detalhes globais (campos, valores permitidos) dentro desse escopo. Nunca cite como
-trabalho da task um requisito build, coletivo ou atribuído a outra task.
-"""
-
 
 def instructions_for(role, operation):
-    if operation in ('review_task', 'review_phase'):
-        scope = ('Revise só a task e seus requisitos atribuídos.' if operation == 'review_task' else
-                 'Revise a cobertura coletiva desta fase; preserve as tasks/versões já aprovadas.')
+    if operation == 'review_task':
+        scope = 'Revise só a task e seus requisitos atribuídos. Você não valida nem repara a fase.'
         return POLICY + '\n' + scope + """
 Responda summary e findings. Sem problemas, findings=[]. Não calcule approved nem outros
 booleanos redundantes: o harness deriva o resultado dos problemas funcionais encontrados.
@@ -159,6 +140,4 @@ são editoriais usando findings. Não envie uma reprovação contraditória nem 
 para sustentar o veredito anterior. A fonte e as aprovações anteriores continuam válidas.
 """
     instruction = OPERATIONS[operation]
-    if operation in ('review_phase', 'review_plan'):
-        instruction += COLLECTIVE_CONTRACT
     return POLICY + '\n' + instruction

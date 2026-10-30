@@ -21,6 +21,7 @@ from .plan_models import agent_schema
 from .run_events import BuildItem, InitEvent
 from .recovery import OperationJournal
 from .response_adapter import decode_response, contract_feedback
+from .task_view import TaskView
 from .build_review import evidence_catalog, fidelity_schema, requirement_quotes, resolve_references
 
 
@@ -113,21 +114,35 @@ class BuildEngine:
                 await asyncio.to_thread(sync_tree,snapshot)
                 atomic_write(snapshot.parent/'audit.json',json.dumps({'status':'running','workspace':str(cwd)}))
             provider_error=None
+            view=None
+            task_id=data.get('task',{}).get('id')
+            if task_id in self.scopes and operation in ('fidelity','verification','diagnose','review_verification_repair','delivery_repair_review'):
+                unit=dict(data)
+                unit.setdefault('delivered_files',self.progress[task_id].get('files') or self.progress[task_id].get('writer_result',{}).get('files',[]))
+                view=await asyncio.to_thread(TaskView,cwd,unit,self.scopes[task_id])
+                request=view.request(request)
+                self.store.json(f'control/audits/{call:04d}/view.json',{'task_id':task_id,'operation':operation,
+                    'files':sorted(view.before),'policy':'Entrega desta thread e dependências declaradas/importadas.'})
             self.active[call]=role;self.last_role=role;self.emit('agent_started')
             try:
                 output=await self.agents.generate(self.state.reviewer if role=='reviewer' else self.state.writer,
-                    role,build_prompt(operation,request,schema),schema,self.store,call,cwd=cwd,allow_tools=True)
+                    role,build_prompt(operation,request,schema),schema,self.store,call,cwd=view.root if view else cwd,allow_tools=True)
             except AgentError as exc:
                 provider_error=exc
             except asyncio.CancelledError:
+                if view:view.close()
                 if snapshot:
                     await asyncio.to_thread(restore_sources,cwd,snapshot,snapshot.parent/'changes')
                     await asyncio.to_thread(sync_tree,cwd)
                     self.close_audit(snapshot)
                 raise
+            except BaseException:
+                if view:view.close()
+                raise
             finally:
                 self.active.pop(call,None);self.emit('agent_finished')
             if provider_error:
+                if view:view.close()
                 if snapshot:
                     await asyncio.to_thread(restore_sources,cwd,snapshot,snapshot.parent/'changes')
                     await asyncio.to_thread(sync_tree,cwd)
@@ -136,6 +151,22 @@ class BuildEngine:
                 await self.recover('agent_recovery',str(provider_error),attempt,data.get('task',{}).get('id'))
                 feedback=f'A chamada anterior falhou: {provider_error}. Continue a operação preservando o trabalho existente.'
                 continue
+            if view:
+                violation=view.changes()
+                if violation:
+                    view.archive(snapshot.parent/'changes');view.close();self.close_audit(snapshot)
+                    feedback='O auditor alterou fontes da visão de sua task: '+', '.join(violation)+'. Audite sem editar a aplicação.'
+                    self.journal.abandon(key,feedback)
+                    await self.recover('auditor_recovery',feedback,attempt,task_id)
+                    continue
+                try:
+                    if operation=='verification':view.checks_to_source()
+                except ValueError as exc:
+                    view.close();self.close_audit(snapshot);feedback=str(exc)
+                    self.journal.failed(key,feedback)
+                    await self.recover('auditor_recovery',feedback,attempt,task_id)
+                    continue
+                view.close()
             self.store.write(f'log/{role}-{call:04d}.response.txt',output)
             if operation in ('fidelity','verification','diagnose','review_verification_repair','delivery_plan','delivery_diagnosis','delivery_repair_review') and await asyncio.to_thread(manifest,cwd)!=context_tree:
                 gate='G2' if operation=='fidelity' else 'G3'
@@ -150,6 +181,7 @@ class BuildEngine:
             if snapshot:self.close_audit(snapshot)
             try:
                 raw=decode_response(output)
+                if view:raw=view.result(raw)
                 if operation=='fidelity':raw=resolve_references(raw,data['evidence_catalog'])
                 value=model.model_validate(raw)
                 if check:check(value)
@@ -221,7 +253,8 @@ class BuildEngine:
         self.announce('dependencies','Levantando dependências do plano e verificando o ambiente.')
         directory=self.store.path('control/environment-analysis');directory.mkdir(parents=True,exist_ok=True)
         cached=self.store.read_json('control/dependencies.json')
-        spec=EnvironmentSpec.model_validate(cached) if cached else await self.invoke('reviewer','environment',{'phase_zero':self.source['plan']['phases'][0],
+        phase_zero={k:v for k,v in self.source['plan']['phases'][0].items() if k!='tasks'}
+        spec=EnvironmentSpec.model_validate(cached) if cached else await self.invoke('reviewer','environment',{'phase_zero':phase_zero,
             'stack':self.source['init']['document']['stack'],'tools':self.source['init']['document']['tools'],
             'system':platform.system(),'platform':platform.platform(),'providers':sorted({self.state.writer.provider,self.state.reviewer.provider}),
             'executables':{name:shutil.which(name) for name in ('node','npm','pnpm','python3','pip','uv','cargo','go','dotnet','apt-get','dnf','pacman','brew','codex','claude','opencode','agy')}},
@@ -297,9 +330,10 @@ class BuildEngine:
             for index,part in enumerate(item['parts'],1):
                 identifier=item['source_id'] if len(item['parts'])==1 else f"{item['source_id']}.{index:02d}"
                 roles[identifier]=part['responsibility']
-        def validate(blueprint):
-            if len({s.task_id for s in blueprint.tasks})!=len(blueprint.tasks) or {s.task_id for s in blueprint.tasks}!=set(self.tasks)-{'BUILD-README'}:
-                raise ValueError('Mapeie exatamente todos os IDs de tasks do plan, sem omissões ou tasks novas.')
+        collected={}
+        def validate(blueprint,expected=None):
+            if len({s.task_id for s in blueprint.tasks})!=len(blueprint.tasks) or {s.task_id for s in blueprint.tasks}!=(expected if expected is not None else set(self.tasks)-{'BUILD-README'}):
+                raise ValueError('Mapeie somente os IDs recebidos nesta chamada, sem omissões ou tasks novas.')
             for scope in blueprint.tasks:
                 task=self.tasks[scope.task_id]
                 assigned=[roles.get(c['requirement_id']) for c in task['seed'].get('coverage',[])]
@@ -312,7 +346,7 @@ class BuildEngine:
                 if not set(scope.requirement_ids).issubset(valid_ids):raise ValueError('Use requirement_ids Rxxx fornecidos, sem criar IDs.')
                 if scope.task_id in scope.depends_on or any(d not in self.tasks or d=='BUILD-README' for d in scope.depends_on):
                     raise ValueError('Dependências devem apontar IDs de tasks existentes, sem autorreferência.')
-            candidate={s.task_id:s for s in blueprint.tasks}
+            candidate={**collected,**{s.task_id:s for s in blueprint.tasks}}
             self.validate_graph(candidate)
         cached=self.saved.get('blueprint')
         if cached:
@@ -320,8 +354,17 @@ class BuildEngine:
             validate(value)
         else:
             directory=self.store.path('control/blueprint-analysis');directory.mkdir(parents=True,exist_ok=True)
-            value=await self.invoke('reviewer','blueprint',{'plan':self.source['plan'],'product_requirements':{
-                    f'R{i:03d}':text for i,text in enumerate(self.source['init']['document']['requirements'],1)}},BuildBlueprint,directory,validate)
+            for phase in self.source['plan']['phases']:
+                for task in phase['tasks']:
+                    single={k:phase[k] for k in ('number','title','goal','depends_on')}
+                    single['tasks']=[task]
+                    plan={'title':self.source['plan']['title'],'objective':self.source['plan']['objective'],'phases':[single]}
+                    result=await self.invoke('reviewer','blueprint',{'plan':plan,
+                        'available_tasks':[{'id':t['id'],'phase_number':t['phase_number']} for t in self.tasks.values() if t['id']!='BUILD-README'],
+                        'product_requirements':{f'R{i:03d}':text for i,text in enumerate(self.source['init']['document']['requirements'],1)}},
+                        BuildBlueprint,directory,lambda v,key=task['id']:validate(v,{key}))
+                    collected.update({s.task_id:s for s in result.tasks})
+            value=BuildBlueprint(tasks=list(collected.values()))
         self.scopes={s.task_id:s for s in value.tasks}
         self.scopes['BUILD-README']=TaskScope(task_id='BUILD-README',kind='documentation',writes=['README.md','.env.example'],reads=['**'],depends_on=list(set(self.tasks)-{'BUILD-README','BUILD-INSTALLATION'}),
             requirement_ids=[f'R{i:03d}' for i in range(1,len(self.source['init']['document']['requirements'])+1)])

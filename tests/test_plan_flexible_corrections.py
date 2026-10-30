@@ -128,14 +128,11 @@ class FlexibleCorrectionIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 if request['task']=='write_task' and data['task_id']=='P0-T001':
                     value=json.loads(output);value['objective']+=' Consumir a referência P0-T002.'
                     return json.dumps(value)
-                if request['task']=='review_phase' and data['phase']['number']==0 and not inner.replaced:
-                    inner.replaced=True;old=data['phase']['tasks'][1];seed=deepcopy(old['seed'])
-                    # view() omite source_quotes; recuperar a citação canônica do mapa.
-                    req=next(e['requirement'] for e in data['coverage_map'] if e['requirement']['id']==seed['coverage'][0]['requirement_id'])
-                    seed['source_quotes']=[req['text']];seed['scope']+=' para o projeto.'
-                    return json.dumps({'summary':'Atualizar o recorte mantendo a responsabilidade.', 'findings':[],
-                        'structural_changes':[{'operation':'remove','task_ids':[old['id']],'replacements':[],'reason':'Substituir o recorte.'}],
-                        'additions':[{'phase_number':0,'after_task_id':'P0-T001','task':seed}]})
+                if request['task']=='outline_phase' and data['phase_source']['number']==0 and not inner.replaced:
+                    inner.replaced=True;seed=deepcopy(json.loads(output)['tasks'][1]);seed['scope']+=' para o projeto.'
+                    inner.task_repairs['P0-T002']=[{'summary':'Atualizar o recorte mantendo a responsabilidade.',
+                        'structural_changes':[{'operation':'remove','task_ids':['P0-T002'],'replacements':[],'reason':'Substituir o recorte.'}],
+                        'additions':[{'phase_number':0,'after_task_id':'P0-T001','task':seed}]}]
                 return output
         agents=Replacement();engine=PlanEngine(self.state,agents);await engine.run()
         task=next(t for p in engine.phases for t in p.tasks if t.id=='P0-T001')

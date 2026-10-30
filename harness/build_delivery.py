@@ -186,7 +186,7 @@ class DeliveryGate:
                 'deliverables':['Manifestos e arquivos operacionais necessários para instalar e iniciar a aplicação.']}}
         previous=e.scopes.get(REPAIR)
         writes=list(dict.fromkeys([*(previous.writes if previous else []),*diagnosis.repair_files]))
-        e.scopes[REPAIR]=TaskScope(task_id=REPAIR,kind='setup',writes=writes,reads=[*source_tree(self.project),'README.md'],depends_on=[],requirement_ids=[])
+        e.scopes[REPAIR]=TaskScope(task_id=REPAIR,kind='setup',writes=writes,reads=[*manifests(self.project),'README.md'],depends_on=[],requirement_ids=[])
         e.progress.setdefault(REPAIR,{'gates':['waiting']*4,'started':True,'completed':False,'attempts':0})
         if not self.work:
             self.work=Workspace(self.project,self.store,REPAIR,runtimes=False,source_only=True)
@@ -349,6 +349,7 @@ class DeliveryGate:
         if self.record.get('repair_task'):
             e.tasks[REPAIR]=self.record['repair_task']
             e.scopes[REPAIR]=TaskScope.model_validate(self.record['repair_scope'])
+            e.scopes[REPAIR].reads=[*manifests(self.project),'README.md']
             e.progress.setdefault(REPAIR,{'gates':['completed','completed','completed','waiting'],'completed':False,'started':True,'attempts':0})
 
     async def ensure_host(self,plan,installs,checks):

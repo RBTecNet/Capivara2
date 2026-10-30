@@ -17,7 +17,7 @@ def execution_brief(engine,key):
         'source_policy':'TaskContent define a entrega desta unidade. Seed, citações e requisitos globais são referências; não são ordens para implementar toda a fase.',
         'quality_policy':'O harness define e executa as verificações G3. Uma referência genérica a testes próprios não exige criar suítes no G0.',
         'other_owners':[{'task_id':k,'title':t['content']['title']} for k,t in engine.tasks.items()
-                        if k!=key and t['phase_number']==task['phase_number']],
+                        if k!=key and k in engine.scopes[key].depends_on],
         'reservation_policy':'Solicitar scope_requests antes de editar pontos de montagem fora de writes. Não entregar patches não aplicados como integração concluída.'}
 
 

@@ -118,7 +118,7 @@ asyncio.run(PlanEngine(state,agents).run())
     async def test_resume_preserves_structural_addition_and_generated_task_ids(self):
         from plan_fixture import approved_review
         agents=PlanAgents()
-        agents.phase_reviews_by_number={2:[{**approved_review(),'approved':False,'coverage_complete':False,
+        agents.task_repairs={'P2-T002':[{**approved_review(),'approved':False,'coverage_complete':False,
             'additions':[{'phase_number':2,'after_task_id':'P2-T002','task':{
                 'title':'Persistência das operações','scope':'Conectar operações à persistência local.',
                 'source_quotes':['Gerenciar as tarefas.'],'coverage':[{'requirement_id':'P2-A001','excerpt':'tarefas'}]}}]}]}

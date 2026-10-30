@@ -24,6 +24,11 @@
 - Build pode instalar dependências e executar CLIs sem confirmações, conforme
   autorização explícita do usuário. Bloqueios de instalação interrompem o build
   com pacotes exatos e script/instruções para recuperação manual.
+- Cada chamada de blueprint descreve apenas uma task. O controlador reúne os
+  escopos e agenda os workers; nenhum modelo recebe o plan completo para organizar
+  ou reparar entregas. Validadores usam visões temporárias da entrega, base e
+  dependências declaradas/importadas. Essas visões fora do projeto são removidas
+  após a chamada; evidências e certificados persistentes continuam em .harness.
 - Paralelismo exige isolamento, escopos de leitura/escrita sem conflitos e
   integração validada. Escopos incertos são serializados. Nunca publicar/remotar.
 - G1 confere existência; G2 fidelidade à task; G3 funcionalidade mínima da task,
@@ -58,8 +63,11 @@
   scripts manuais quando a instalação automática não for possível.
 - O plan exige init aprovado e íntegro, preserva suas fases e divide cada fase
   em tasks pequenas. Cada chamada começa sem histórico; o escritor recebe só
-  uma task. Tasks e fases exigem aprovação explícita; a conclusão certifica essas
-  aprovações e a cobertura completa, sem reabrir conteúdo por uma revisão livre.
+  uma task. O validador recebe exclusivamente a entrega dessa thread e seu contexto
+  necessário. Só a task exige aprovação do agente. Quando todas as threads estão
+  aprovadas, o controlador conclui a fase e o módulo pelos certificados salvos.
+  Não existe agente responsável pela fase, revisão coletiva, agrupamento de resumos
+  nem conferência global por LLM. Nunca reenviar resultados reunidos ao modelo.
 - O plan só compara documentação com a origem. Não executar testes nem verificar
   ambiente, gerar código ou prescrever testes de validação ao build. A fase 0
   documenta stack e dependências de desenvolvimento e testes já definidas no init.
@@ -71,7 +79,8 @@
   preparação da infraestrutura continuam nas tasks. A fase 0 somente cataloga
   tecnologias e ferramentas; suas finalidades não são ordens de executar testes.
 - Tasks declaram responsabilidades por IDs e recortes literais dos requisitos.
-  Revisar cada task apenas em seu escopo e conferir cobertura coletivamente.
+  Revisar cada task apenas em seu escopo. A consolidação local confere as atribuições
+  já definidas, sem outro agente ou diagnóstico global de cobertura.
   Remover, dividir e consolidar são operações estruturadas e validadas em lote
   antes de novas redações. Não enviar remoção como uma instrução ao escritor.
 - A classificação semântica é aprovada antes da redação; referências mistas devem

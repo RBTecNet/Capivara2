@@ -73,6 +73,22 @@ def plan_completed(project_dir: Path, source_hash: str) -> bool:
             if any(approval.get("approved_versions", {}).get(task.id) != version(task)
                    for phase in plan.phases for task in phase.tasks):
                 return False
+        if plan.contract_version >= 3:
+            from .plan_certificates import approval_path
+            from .plan_contracts import TaskAssessment
+            if approval.get('completion_mode')!='task-certificates':return False
+            for phase in plan.phases:
+                certificate=store.read_json(f'phases/{phase.number:02d}/certificate.json')
+                if (not certificate or certificate.get('producer')!='controller'
+                    or certificate.get('source_prompt_sha256')!=source_hash
+                    or certificate.get('approved_versions')!={t.id:version(t) for t in phase.tasks}):return False
+                for task in phase.tasks:
+                    path=approval_path(task);value=store.read_json(path)
+                    checksum=digest(store.path(path).read_text())
+                    if (not value or value.get('version')!=version(task) or value.get('source_prompt_sha256')!=source_hash
+                        or not TaskAssessment.model_validate(value['review']).approved
+                        or approval.get('task_certificates',{}).get(task.id)!=checksum
+                        or certificate.get('task_certificates',{}).get(task.id)!=checksum):return False
         return (plan.source_prompt_sha256 == source_hash and plan.render() == markdown
                 and approval["source_prompt_sha256"] == source_hash
                 and digest(markdown) == status.get("plan_sha256") == approval["plan_sha256"]

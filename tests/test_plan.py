@@ -78,7 +78,7 @@ class PlanTests(unittest.IsolatedAsyncioTestCase):
     async def test_only_divergent_task_is_rewritten_until_approved(self):
         agents = PlanAgents()
         agents.task_reviews = [rejected("P0-T001", "Explicite o requisito da stack aprovada.")]
-        agents.phase_reviews = [rejected("P0-T002", "Preserve apenas a dependência definida no init.")]
+        agents.task_reviews += [approved_review(),rejected("P0-T002", "Preserve apenas a dependência definida no init.")]
 
         events = []
         await PlanEngine(self.state, agents, on_event=events.append).run()
@@ -101,7 +101,7 @@ class PlanTests(unittest.IsolatedAsyncioTestCase):
                 "title": "Persistência das operações", "scope": "Conectar operações à persistência local.",
                 "source_quotes": ["Gerenciar as tarefas."],
                 "coverage": [{"requirement_id": "P2-A001", "excerpt": "tarefas"}]}}]}
-        agents.phase_reviews_by_number = {2: [verdict]}
+        agents.task_repairs = {'P2-T002':[verdict]}
         path = await PlanEngine(self.state, agents).run()
         plan = json.loads(path.with_suffix(".json").read_text())
         ids = [t["id"] for t in plan["phases"][2]["tasks"]]
@@ -173,7 +173,7 @@ class PlanTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_contract_and_unknown_corrections_return_to_reviewer_without_history(self):
         agents = PlanAgents()
         agents.invalid = 1
-        agents.phase_reviews = [rejected("P999-T999")]
+        agents.task_reviews = [rejected("P999-T999")]
         await PlanEngine(self.state, agents).run()
         corrected = [envelope for _, envelope in agents.calls if envelope["format_correction"]]
         self.assertGreaterEqual(len(corrected), 2)
@@ -185,7 +185,8 @@ class PlanTests(unittest.IsolatedAsyncioTestCase):
         agents = PlanAgents()
 
         def change(operation, store):
-            if operation == "validate_completion":
+            request=agents.calls[-1][1]['current_request']
+            if operation == 'review_task' and request['data']['task']['id']=='P2-T004':
                 (self.root / ".harness/prompts/final.md").write_text("alteração externa")
 
         agents.on_generate = change

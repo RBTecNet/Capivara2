@@ -151,22 +151,25 @@ seu significado. Critérios e entregáveis coletivos permanecem referências de 
 
 O escritor recebe uma task, stack, restrições e requisitos globais do produto, sem a fase
 inteira ou histórico conversacional. O revisor verifica apenas o recorte atribuído, usando
-os detalhes globais quando necessários (por exemplo, os valores de um status). As fases
-passam depois por revisão coletiva contra a origem.
+os detalhes globais quando necessários (por exemplo, os valores de um status).
+Cada thread é responsável apenas por sua task. Quando todas as threads estão aprovadas,
+o controlador conclui a fase. Nenhum agente recebe a fase, nem um agrupamento de
+resumos ou entregas das outras threads.
 
 Uma devolução de conteúdo exige um **contrato de correção**: task e versão de origem,
 evidência literal, problema concreto, substituições exatas por campo e condições de aceite
 `contains`/`excludes`. O harness confere que o defeito existe antes e que a mudança satisfaz
 o aceite. Outro exame documental valida a coerência desse contrato antes de enviá-lo ao
-escritor. Um contrato semanticamente rejeitado pode ser corrigido uma vez; a contradição
-persistente interrompe o módulo com diagnóstico.
+escritor. Uma proposta rejeitada volta ao revisor dessa mesma thread para correção
+automática, preservando as outras aprovações.
 
 O escritor aplica cada contrato uma única vez e preserva os campos restantes. Se sua
 resposta desviar das substituições autorizadas, o harness aplica exatamente o patch
 aprovado e registra a recuperação; não pede outra tentativa. A task corrigida ainda
 precisa de aprovação explícita do revisor. Os aceites já estabelecidos permanecem ativos:
 uma nova devolução não pode exigir o contrário ou reabrir o mesmo conflito, mesmo com
-outra redação. Uma falha desse contrato deixa o plan incompleto, com diagnóstico.
+outra redação. Uma incompatibilidade retorna ao revisor dessa thread, sem reabrir
+entregas das outras threads.
 
 Remoção, divisão e consolidação são operações estruturadas, aplicadas em lote após validar
 cobertura e conflitos. Elas não são instruções vagas para o escritor. A revisão individual
@@ -175,10 +178,11 @@ não são reutilizados e as versões retiradas ficam no histórico. Uma decisão
 silenciosamente substituída. Repetir o mesmo problema estrutural sem mudar o mapa é falha
 de contrato, sem aprovação automática.
 
-Depois de aprovar cada task e fase, a conclusão confere fonte, cobertura, dependências,
-versões e condições de aceite. O revisor certifica essa consolidação, sem outra rodada
-livre de reescrita de conteúdo aprovado. O build só é habilitado após todas as aprovações
-e os certificados íntegros. Há certificados por versão nos artefatos.
+Cada aprovação individual recebe um certificado ligado à versão exata da task.
+O controlador consolida esses certificados e marca a fase como concluída quando todas
+as suas threads estão aprovadas. A conclusão do plan também é local, sem chamada global
+a um LLM. O build só é habilitado após todas as aprovações e certificados íntegros.
+A retomada recupera o checkpoint e essas aprovações, sem reproduzir revisões coletivas antigas.
 
 Erros de JSON/schema e respostas inconsistentes são recuperados automaticamente na mesma
 operação, com espera cancelável, sem limite fixo de tentativas e sem refazer tasks aprovadas.
@@ -216,7 +220,7 @@ afetados voltam à revisão. Havendo vários sucessores, o harness preserva a am
 para o revisor resolver, sem manter um literal de ID retirado como regra imutável.
 
 Cada chamada recebe apenas o recorte necessário: finalidade, restrições, requisitos e
-conteúdo da fase/task. O pedido integral e as versões aprovadas permanecem em disco,
+conteúdo da própria task. O pedido integral e as versões aprovadas permanecem em disco,
 sem reenviar textos completos de outras fases ou cópias redundantes dos prompts.
 
 O plan não entrevista o usuário, gera código, verifica dependências instaladas ou
@@ -238,7 +242,7 @@ de campos e infraestrutura de produção continuam nas tasks de implementação.
   final.json                     # fases e tasks estruturadas para o futuro build
   phases/00/outline.json          # recortes da fase 0
   phases/00/tasks/P0-T001.json    # documentação de uma única task
-  phases/00/approved.json         # fase após revisão coletiva
+  phases/00/approved.json         # fase consolidada pelo controlador
   context/call-0001.json         # entrada isolada, sem histórico de outras chamadas
   control/settings.json          # escritor, revisor e política de contexto
   control/checkpoint.json        # progresso e versões aprovadas
@@ -287,11 +291,18 @@ execute build novamente. Dependências adicionais de um check G3 são instaladas
 área de ferramentas interna, sem alterar o manifesto da aplicação durante o teste.
 CLIs ausentes precisam ser instalados/autenticados ou configurados no catálogo.
 
-O builder cria um mapa de arquivos e dependências por task. Cada worker usa uma cópia
+O builder solicita um escopo por chamada, enviando apenas uma task do plan. O controlador
+reúne os escopos e agenda as threads; nenhum modelo recebe o plano completo para isso.
+Cada worker usa uma cópia
 isolada da aplicação e das dependências locais. Reservas incluem escritas e leituras;
 uma escrita que conflita com leitura/escrita de outra task impede paralelismo.
 Escopos desconhecidos (`**`) são serializados. Fases respeitam suas dependências e
 a fase 0. O máximo configurado é um teto; conflitos podem reduzir o número efetivo.
+
+Os validadores G2/G3 de cada worker recebem uma visão temporária com sua entrega,
+a base correspondente e dependências declaradas ou importadas. Fontes não relacionadas
+não são copiadas para essa visão. Os scripts funcionais retornam ao workspace da task
+para execução pelo harness; outras threads mantêm suas próprias devoluções e aprovações.
 
 Antes da integração, o harness confere os arquivos realmente alterados contra a reserva
 e compara a base com a raiz atual. Mudanças fora da reserva ou alterações externas

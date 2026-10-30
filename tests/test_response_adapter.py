@@ -101,29 +101,30 @@ class ResponseAdapterTests(unittest.TestCase):
 class AdapterRecoveryTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp=test_plan.PlanTests.asyncSetUp
 
-    async def test_inconsistent_phase_response_returns_only_to_reviewer_and_preserves_tasks(self):
+    async def test_inconsistent_task_response_returns_only_to_its_reviewer_and_preserves_other_tasks(self):
         class Inconsistent(PlanAgents):
             phase_calls=0
             async def generate(inner,*args,**kwargs):
                 result=await super().generate(*args,**kwargs)
                 request=inner.calls[-1][1]['current_request']
-                if request['task']=='review_phase' and request['data']['phase']['number']==0:
+                if request['task']=='review_task' and request['data']['task']['id']=='P0-T001':
                     inner.phase_calls+=1
                     if inner.phase_calls<=3:
                         return json.dumps({'approved':False,'matches_source':True,'coverage_complete':True,
                             'tasks_are_small':True,'no_test_strategy':True,'summary':'Reprovação contraditória.',
-                            'corrections':[],'additions':[],'structural_changes':[]})
-                    task=request['data']['phase']['tasks'][0]
+                            'corrections':[],'replan':None})
+                    task=request['data']['task']
                     return json.dumps({'summary':'Fase fiel; observação opcional de grafia.',
                         'findings':[{'task_id':task['id'],'category':'editorial','reason':'Grafia sem perda de sentido.',
                             'instruction':'Revisão editorial opcional.','requirement_ids':[],'edits':[]}],
-                        'structural_changes':[],'additions':[]})
+                        'replan':None})
                 return result
         agents=Inconsistent();e=PlanEngine(self.state,agents)
         with patch('harness.plan_engine.asyncio.sleep',new=AsyncMock()):await e.run()
         self.assertEqual(agents.phase_calls,4)
         operations=[r['current_request']['task'] for _,r in agents.calls]
         self.assertNotIn('correct_task',operations)
+        self.assertNotIn('review_phase',operations)
         self.assertEqual(operations.count('write_task'),len(e.approved_tasks))
         self.assertEqual(e.contract_errors,3)
         self.assertTrue(list((self.root/'.harness/plan/control/observations').glob('*.json')))

@@ -31,6 +31,7 @@ class PlanAgents:
         self.classification_reviews = []
         self.contract_reviews = []
         self.ignore_correction = False
+        self.task_repairs = {}
 
     async def generate(self, selection, role, prompt, schema, store, call_id):
         envelope = json.loads(prompt.rsplit("\n\nREQUEST:\n", 1)[1])
@@ -97,7 +98,7 @@ class PlanAgents:
             seed = data["seed"]
             return json.dumps({"title": seed["title"], "objective": seed["scope"],
                 "implementation_steps": [seed["scope"]], "deliverables": [seed["title"]]})
-        if operation == "reassess_phase":
+        if operation == "reassess_task":
             if self.repairs:
                 return json.dumps(self.repairs.pop(0))
             return json.dumps({"summary": "Reavaliar apenas o recorte atribuído.",
@@ -107,6 +108,16 @@ class PlanAgents:
                 "additions": [], "structural_changes": []})
         reviews = {"review_task": self.task_reviews, "review_phase": self.phase_reviews, "review_plan": self.plan_reviews}
         if operation in reviews:
+            if operation=='review_task' and self.task_repairs.get(data['task']['id']):
+                repair=self.task_repairs[data['task']['id']].pop(0)
+                self.repairs.append({key:repair.get(key,[]) for key in ('structural_changes','additions','decisions')} |
+                                    {'summary':repair.get('summary','Reparo da task atual.')})
+                claim=data['task']['seed']['coverage'][0]
+                requirement=next(r for r in data['assigned_requirements'] if r['id']==claim['requirement_id'])
+                return json.dumps({'approved':False,'matches_source':False,'coverage_complete':True,
+                    'tasks_are_small':False,'no_test_strategy':True,'summary':'Reavaliar somente a estrutura desta task.',
+                    'corrections':[],'replan':{'task_id':data['task']['id'],'reason':'Reparo estrutural delimitado.',
+                    'evidence':[{'requirement_id':requirement['id'],'quote':requirement['text']}]}})
             queue = (self.phase_reviews_by_number.get(data["phase"]["number"], self.phase_reviews)
                      if operation == "review_phase" else reviews[operation])
             review = queue.pop(0) if queue else approved_review()

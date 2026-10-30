@@ -137,7 +137,7 @@ class PlanActionIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 return result
         agents=Structure();engine=PlanEngine(self.state,agents);await engine.run()
         operations=[e['current_request']['task'] for _,e in agents.calls]
-        self.assertEqual(operations.count('reassess_phase'),1)
+        self.assertEqual(operations.count('reassess_task'),1)
         self.assertNotIn('correct_task',operations)
         self.assertEqual(engine.contract_errors,0)
         self.assertEqual(len(engine.approved_tasks),sum(len(p.tasks) for p in engine.phases))
@@ -158,6 +158,6 @@ class PlanActionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         agents=Edits();engine=PlanEngine(self.state,agents);await engine.run()
         operations=[e['current_request']['task'] for _,e in agents.calls]
         self.assertEqual(operations.count('correct_task'),1)
-        self.assertNotIn('reassess_phase',operations)
+        self.assertNotIn('reassess_task',operations)
         self.assertEqual(engine.contract_errors,0)
         self.assertTrue(all(r['status']=='verified' for r in engine.correction_book.records.values()))

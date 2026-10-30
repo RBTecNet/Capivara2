@@ -23,6 +23,7 @@ from .recovery import OperationJournal, fingerprint
 from .response_adapter import decode_response, contract_feedback
 from .plan_adapter import REVIEW_MODELS, wire_schema, normalize_review, compact_context, stable_context
 from .plan_references import successors, rebind_tasks, referencing_tasks, rewrite
+from .plan_certificates import write_task_approval, recorded_approval, phase_certificate
 
 
 class PlanEngine:
@@ -59,6 +60,8 @@ class PlanEngine:
         self.legacy_responses={}
         self.last_operation_key=None
         self.compatible_operations={}
+        self.task_approval_records={}
+        self.legacy_task_approvals={}
 
     def item_state(self, item_id, **states):
         self.item_states.setdefault(item_id, {}).update(states)
@@ -100,6 +103,8 @@ class PlanEngine:
         self.emit("stage_changed")
 
     async def call(self, role, task, data, model, check=None, *, max_attempts=None):
+        if task in ('review_phase','review_plan','validate_completion'):
+            raise PlanContractError('A consolidação de fases e do plan pertence ao controlador; agentes recebem somente uma task.')
         feedback = ""
         rejected_response = None
         selection = self.state.reviewer if role == "reviewer" else self.state.writer
@@ -286,6 +291,8 @@ class PlanEngine:
         self.store.json("control/checkpoint.json", {"round": self.round, "phase": self.phase_number,
             "approved_tasks": sorted(self.approved_tasks), "approved_phases": sorted(self.approved_phases),
             "approved_versions": self.approved_versions, "task_sequences": self.task_sequences,
+            "source_prompt_sha256":self.source['source_prompt_sha256'],
+            "created_tasks":sorted(self.created_tasks),"pending_feedback":self.pending_feedback,
             "phases": [phase.model_dump() for phase in self.phases]})
         self.store.json("control/coverage.json", coverage_map(self.phases, self.requirements))
         self.store.json("control/issues.json", self.ledger.dump())
@@ -317,22 +324,7 @@ class PlanEngine:
             data["responsibility_map"] = [entry for entry in coverage_map([phase], self.requirements)
                                            if entry["requirement"]["id"] in ids]
             return data
-        phases = [phase] if phase else self.phases
-        data = {"source": self.source, "coverage_map": coverage_map(phases, self.requirements),
-                "scope_decisions": self.ledger.context({t.id for p in phases for t in p.tasks}),
-                "approved_versions": self.approved_versions,
-                "correction_contracts": self.correction_book.context({t.id for p in phases for t in p.tasks})}
-        if phase is not None:
-            phase_view = phase.model_dump()
-            phase_view["tasks"] = [view(t) for t in phase.tasks]
-            data.update(phase_source=self.origins[phase.number], phase=phase_view)
-            data["document_boundary"] = "Avalie SOMENTE tasks[].content como trabalho gerado. source, phase_source e requisitos build são referências da origem, nunca instruções novas das tasks."
-            data["review_boundary"] = ("Somente catálogo de tecnologias e ferramentas; finalidades não são execução de QA."
-                                       if phase.number == 0 else
-                                       "Cobertura coletiva somente desta fase. Respeitar delegações ao build e tarefas das outras fases.")
-        else:
-            data["phases"] = [p.model_dump() for p in self.phases]
-        return data
+        raise PlanContractError("A revisão exige uma task; não existe revisão coletiva por agente.")
 
     def check_repair(self, value, phases):
         requirements = self.requirements
@@ -351,8 +343,8 @@ class PlanEngine:
         return (*prepare_changes(self.phases, value, requirements, self.origins, self.task_sequences), requirements)
 
     async def review(self, scope, phase=None, task=None):
-        if scope not in ("task", "phase"):
-            raise PlanContractError("A conclusão consolida aprovações; não existe reabertura livre do plano completo.")
+        if scope != "task" or task is None:
+            raise PlanContractError("O validador recebe somente a task da sua thread.")
         phases = [phase] if phase else self.phases
         def check(value):
             available = {t.id: t for p in phases for t in p.tasks}
@@ -483,6 +475,7 @@ class PlanEngine:
                 self.approved_tasks.add(task.id)
                 self.approved_versions[task.id] = version(task)
                 self.ledger.resolved(task)
+                write_task_approval(self,task,verdict,self.last_operation_key)
                 self.item_state(task.id, validation="completed")
                 self.checkpoint()
                 self.current_task_id = None
@@ -556,20 +549,30 @@ class PlanEngine:
 
     async def reassess(self, phase):
         self.item_state(f"P{phase.number}", validation="running")
-        self.announce("reassessing_phase", f"Reavaliando estrutura e pendências repetidas da fase {phase.number}.")
-        data = self.review_data(phase)
+        self.announce("reassessing_task", f"Reavaliando somente a task ativa da fase {phase.number}.")
+        task=next((t for t in phase.tasks if t.id==self.current_task_id),None)
+        if task is None:raise PlanContractError('A reavaliação deve pertencer a uma task ativa.')
+        data = self.review_data(phase,task)
+        data['phase_source']={key:self.origins[phase.number][key] for key in ('number','title','goal','depends_on')}
         data["trigger"] = "Devoluções sem avanço ou conflito de responsabilidade. Resolver a causa, sem aprovar por tentativas."
         def check(repair):
             self.check_repair(repair, [phase])
+            owned={claim.requirement_id for claim in task.seed.coverage}
+            for change in repair.structural_changes:
+                if set(change.task_ids)-{task.id}:
+                    raise ValueError('A thread só pode reestruturar sua própria task.')
+            seeds=[seed for change in repair.structural_changes for seed in change.replacements]+[a.task for a in repair.additions]
+            if any(c.requirement_id not in owned for seed in seeds for c in seed.coverage):
+                raise ValueError('As novas unidades devem permanecer nos requisitos atribuídos à task desta thread.')
             for decision in repair.decisions:
                 issue = self.ledger.issues.get(decision.issue_id)
-                if not issue or issue["task_id"] != decision.task_id or decision.task_id not in {t.id for t in phase.tasks}:
+                if not issue or issue["task_id"] != decision.task_id or decision.task_id != task.id:
                     raise ValueError("Decisões devem apontar pendências existentes desta fase.")
         fingerprint = structure_version(phase)
         if fingerprint in self.structure_requests:
-            raise PlanContractError(f"Fase {phase.number}: a mesma estrutura foi questionada novamente sem alteração. Revisões incompatíveis.")
+            data['reconsideration']='O diagnóstico anterior não resolveu esta task. Reavalie sua causa, sem reabrir outras threads.'
         self.structure_requests.add(fingerprint)
-        dto = await self.call("reviewer", "reassess_phase", data, StructureRepair,
+        dto = await self.call("reviewer", "reassess_task", data, StructureRepair,
             lambda v: check(PlanRepair(summary=v.summary, decisions=v.decisions, corrections=[],
                                       additions=v.additions, structural_changes=v.structural_changes)))
         repair = PlanRepair(summary=dto.summary, decisions=dto.decisions, corrections=[],
@@ -593,24 +596,16 @@ class PlanEngine:
             if stalled:
                 await self.reassess(phase)
                 continue
-            self.item_state(f"P{number}", validation="running")
-            self.announce("reviewing_phase", f"Revisor validando cobertura coletiva da fase {number}.")
-            verdict = await self.review("phase", phase)
-            if verdict.approved:
-                self.approved_phases.add(number)
-                for task in phase.tasks:
-                    self.ledger.resolved(task)
-                self.item_state(f"P{number}", validation="completed")
-                self.store.json(f"phases/{number:02d}/approved.json", phase.model_dump())
-                self.checkpoint()
-                return
-            self.round += 1
-            for correction in verdict.corrections:
-                task = next(t for t in phase.tasks if t.id == correction.task_id)
-                self.ledger.record(task, correction)
-            self.item_state(f"P{number}", validation="rejected")
-            self.announce("revision_requested", f"Revisor devolveu recortes da fase {number}.")
-            self.apply(verdict)
+            check_assignments([phase],self.requirements)
+            if any(t.id not in self.approved_tasks or self.approved_versions.get(t.id)!=version(t) for t in phase.tasks):
+                raise PlanContractError('A fase possui threads sem aprovação válida.')
+            self.announce('consolidating_phase',f'Controlador consolidando as aprovações individuais da fase {number}.')
+            self.approved_phases.add(number)
+            self.item_state(f"P{number}", validation="completed")
+            self.store.json(f"phases/{number:02d}/approved.json",phase.model_dump())
+            self.store.json(f"phases/{number:02d}/certificate.json",phase_certificate(self,phase))
+            self.checkpoint()
+            return
 
     def prepare_recovery(self):
         self.journal=OperationJournal(self.store,self.source['source_prompt_sha256'])
@@ -619,6 +614,8 @@ class PlanEngine:
             if record.get('status')=='completed' and record.get('namespace')==self.journal.namespace:
                 stable_key=fingerprint((record['role'],record['operation'],stable_context(record['data'])))
                 self.compatible_operations.setdefault(stable_key,[]).append(record['key'])
+                if record.get('operation')=='review_task' and record.get('value',{}).get('approved'):
+                    self.task_approval_records.setdefault(record['data'].get('base_version'),[]).append(record)
         metrics=self.journal.metrics()
         self.operations=metrics.get('operations',0);self.contract_errors=metrics.get('contract_errors',0);self.corrections=metrics.get('corrections',0)
         contexts=sorted(self.store.path('context').glob('call-*.json'),reverse=True)
@@ -631,6 +628,8 @@ class PlanEngine:
                 if response.is_file():
                     key=fingerprint((role,request['task'],request['data']))
                     self.legacy_responses.setdefault(key,[]).append(response)
+                    if role=='reviewer' and request['task']=='review_task':
+                        self.legacy_task_approvals.setdefault(request['data'].get('base_version'),[]).append((request['data'],response))
 
     def invalidate_failed_contract(self):
         if not self.current_task_id:return
@@ -645,6 +644,56 @@ class PlanEngine:
                 if any(c.get('task_id')==task.id and (c.get('contract') or c).get('base_version')==version(task)
                        for c in value.get('corrections',[])):
                     self.journal.abandon(record['key'],'Revisão não resultou numa correção aplicada; pode ser refeita.')
+
+    def restore_checkpoint(self):
+        saved=self.store.read_json('control/checkpoint.json')
+        if not saved:return
+        if saved.get('source_prompt_sha256',self.source['source_prompt_sha256'])!=self.source['source_prompt_sha256']:
+            raise PlanContractError('O checkpoint pertence a outra origem; o histórico foi preservado.')
+        phases=[PlannedPhase.model_validate(p) for p in saved['phases']]
+        for phase in phases:
+            origin=self.origins[phase.number]
+            if any(getattr(phase,k)!=origin[k] for k in ('title','goal','depends_on')):
+                raise PlanContractError('A estrutura de fases salva diverge da origem.')
+            for task in phase.tasks:self.check_seed(task.seed,phase.number)
+        check_assignments(phases,self.requirements)
+        self.phases=phases
+        self.round=saved.get('round',1)
+        self.task_sequences={int(k):v for k,v in saved.get('task_sequences',{}).items()}
+        self.pending_feedback=dict(saved.get('pending_feedback',{}))
+        self.created_tasks=set(saved.get('created_tasks',[]))
+        book=self.store.read_json('control/corrections.json',{})
+        if book and book.get('source_prompt_sha256')!=self.source['source_prompt_sha256']:
+            raise PlanContractError('Os contratos salvos pertencem a outra origem.')
+        self.correction_book.records={r['id']:r for r in book.get('contracts',[])}
+        issues=self.store.read_json('control/issues.json',{})
+        self.ledger.issues={r['id']:r for r in issues.get('issues',[])}
+        self.ledger.decisions=issues.get('decisions',[])
+        for phase in phases:
+            self.applied_structures.add(structure_version(phase))
+            self.item_states[f'P{phase.number}']={'creation':'completed','validation':'waiting'}
+            for task in phase.tasks:
+                path=f'phases/{phase.number:02d}/tasks/{task.id}.json'
+                draft=self.store.read_json(path)
+                if draft:
+                    candidate=type(task).model_validate(draft)
+                    if candidate.id==task.id and candidate.seed==task.seed:
+                        task.content=candidate.content
+                        if 'created_tasks' not in saved:self.created_tasks.add(task.id)
+                for identifier,record in list(self.correction_book.records.items()):
+                    if record['task_id']!=task.id or record['status']!='issued':continue
+                    if task.content.model_dump()==record['expected_content']:
+                        record.update(status='applied',applied_version=version(task))
+                        self.pending_feedback.pop(task.id,None)
+                    elif version(task)==record['base_version']:
+                        self.pending_feedback[task.id]=ContentCorrection.model_validate(record['contract']).legacy().model_dump()
+                        self.correction_book.records.pop(identifier)
+                self.correction_book.verify(task)
+                if recorded_approval(self,task):
+                    self.approved_tasks.add(task.id);self.approved_versions[task.id]=version(task)
+                    self.created_tasks.add(task.id);self.pending_feedback.pop(task.id,None)
+                self.item_states[task.id]={'creation':'completed' if task.id in self.created_tasks else 'waiting',
+                    'validation':'completed' if task.id in self.approved_tasks else 'waiting'}
 
     async def run(self):
         if not self.state.writer or not self.state.reviewer:
@@ -665,10 +714,15 @@ class PlanEngine:
                 self.stage='completed';self.emit('counts_changed')
                 return self.store.path('final.md')
             await self.classify()
+            self.restore_checkpoint()
             self.store.json("control/requirements.json", [r.model_dump() for r in self.requirements.values()])
-            self.round = 1
+            self.round = max(1,self.round)
             for number, origin in self.origins.items():
                 self.phase_number = number
+                existing=next((p for p in self.phases if p.number==number),None)
+                if existing is not None:
+                    await self.validate_phase(existing)
+                    continue
                 self.item_state(f"P{number}", creation="running")
                 self.announce("decomposing", f"Decompondo a fase {number} em recortes pequenos.")
 
@@ -698,7 +752,7 @@ class PlanEngine:
                 raise InitError("Os documentos do init mudaram durante o plan. Execute o plan novamente.")
             plan = FinalPlan(title=f"Plano de implementação — {self.source['document']['title']}",
                 objective=self.source["document"]["objective"], source_prompt_sha256=self.source["source_prompt_sha256"],
-                phases=self.phases, requirements=list(self.requirements.values()), contract_version=2)
+                phases=self.phases, requirements=list(self.requirements.values()), contract_version=3)
             if len(self.approved_phases) != len(self.origins) or len(self.approved_tasks) != sum(len(p.tasks) for p in self.phases):
                 raise InitError("Existem tasks ou fases sem aprovação documental.")
             check_assignments(self.phases, self.requirements)
@@ -710,20 +764,9 @@ class PlanEngine:
                 for task in phase.tasks:
                     self.correction_book.verify(task)
             self.phase_number = None
-            self.announce("reviewing_plan", "Conferindo a conclusão: aprovações explícitas, versões e cobertura integral.")
-            certificate = await self.call("reviewer", "validate_completion", {
-                "source_prompt_sha256": self.source["source_prompt_sha256"],
-                "objective": self.source["document"]["objective"],
-                "product_requirements": self.source["document"]["requirements"],
-                "classification_approved": True,
-                "coverage": coverage_map(self.phases, self.requirements),
-                "phases": [{"number": p.number, "title": p.title, "goal": p.goal, "depends_on": p.depends_on,
-                    "approved": p.number in self.approved_phases,
-                    "tasks": [{"id": t.id, "title": t.content.title, "approved": t.id in self.approved_tasks,
-                               "approved_version": self.approved_versions[t.id]} for t in p.tasks]} for p in self.phases],
-                "local_checks": {"source_unchanged": True, "all_versions_match": True,
-                                 "all_phase_documents_match": True, "all_acceptance_conditions_hold": True},
-                "testing_policy": "Build decide livremente todos os testes, inclusive não citados na origem."}, ContractValidation)
+            self.announce("consolidating_plan", "Controlador consolidando as aprovações individuais salvas.")
+            certificate = ContractValidation(approved=True,
+                reason="Controlador: todas as threads possuem aprovação explícita da versão atual; fases consolidadas sem chamada global ao modelo.")
             self.store.json("control/completion-certificate.json", certificate.model_dump())
             if not certificate.approved:
                 raise PlanContractError(f"A conferência final recusou a conclusão: {certificate.reason}")
@@ -738,6 +781,9 @@ class PlanEngine:
                 "source_prompt_sha256": self.source["source_prompt_sha256"], "review": verdict.model_dump(),
                 "approved_tasks": sorted(self.approved_tasks), "approved_phases": sorted(self.approved_phases),
                 "approved_versions": self.approved_versions,
+                "completion_mode":"task-certificates",
+                "task_certificates":{t.id:digest(self.store.path(f"phases/{p.number:02d}/task-approvals/{t.id}.json").read_text())
+                    for p in self.phases for t in p.tasks},
                 "classification_sha256": digest(self.store.path("control/classification.json").read_text()),
                 "completion_sha256": digest(self.store.path("control/completion-certificate.json").read_text()),
                 "corrections_sha256": digest(self.store.path("control/corrections.json").read_text())})

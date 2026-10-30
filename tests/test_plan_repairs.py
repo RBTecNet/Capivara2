@@ -90,7 +90,7 @@ class PlanRepairTests(unittest.IsolatedAsyncioTestCase):
         agents = PlanAgents()
         verdict = structural_review([structural('split', ['P1-T001'],
             [seed('Definir esquema', 'esquema'), seed('Definir campos das tarefas', 'tarefas')])])
-        agents.phase_reviews = [approved_review(), verdict]
+        agents.task_repairs = {'P1-T001':[verdict]}
         observed = []
         engine = PlanEngine(self.state, agents)
         def observe(operation, store):
@@ -106,7 +106,7 @@ class PlanRepairTests(unittest.IsolatedAsyncioTestCase):
         agents = PlanAgents()
         verdict = structural_review([structural('split', ['P1-T001'],
             [seed('Definir esquema', 'esquema'), seed('Definir campos das tarefas', 'tarefas')])])
-        agents.phase_reviews = [approved_review(), verdict]
+        agents.task_repairs = {'P1-T001':[verdict]}
         engine = PlanEngine(self.state, agents)
         final = await engine.run()
         plan = json.loads(final.with_suffix('.json').read_text())
@@ -132,7 +132,7 @@ class PlanRepairTests(unittest.IsolatedAsyncioTestCase):
                     return json.dumps(out)
                 return result
         agents = WithExtraTask()
-        agents.phase_reviews = [approved_review(), structural_review([structural('remove', ['P1-T002'], [])])]
+        agents.task_repairs = {'P1-T002':[structural_review([structural('remove', ['P1-T002'], [])])]}
         engine = PlanEngine(self.state, agents)
         await engine.run()
         self.assertNotIn('P1-T002', engine.approved_tasks)
@@ -147,7 +147,7 @@ class PlanRepairTests(unittest.IsolatedAsyncioTestCase):
         await engine.run()
         operations = [e['current_request']['task'] for _,e in agents.calls]
         self.assertEqual(operations.count('correct_task'), 1)
-        self.assertNotIn('reassess_phase', operations)
+        self.assertNotIn('reassess_task', operations)
         self.assertEqual(read_status(self.root)['modules']['plan']['status'], 'completed')
         self.assertTrue((self.root/'.harness/plan/final.md').exists())
         self.assertGreater(engine.contract_errors,0)
@@ -174,7 +174,8 @@ class PlanRepairTests(unittest.IsolatedAsyncioTestCase):
         engine = PlanEngine(self.state, agents)
         await engine.run()
         operations = [e['current_request']['task'] for _,e in agents.calls]
-        self.assertEqual(operations.count('validate_completion'),1)
+        self.assertNotIn('validate_completion',operations)
+        self.assertNotIn('review_phase',operations)
         self.assertNotIn('review_plan',operations)
         self.assertNotIn('correct_task',operations)
         self.assertEqual(len(agents.plan_reviews),1)

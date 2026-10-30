@@ -22,6 +22,10 @@ def scoped_schema(model, operation, data, requirements):
         tasks = [t for phase in data.get('phases', []) for t in phase.get('tasks', [])]
     phase_numbers = {data['phase_source']['number']} if 'phase_source' in data else {t['phase_number'] for t in tasks}
     owned = [r.id for r in requirements.values() if r.phase_number in phase_numbers and r.execution_owner == 'tasks']
+    if operation=='reassess_task':
+        owned=list({c['requirement_id'] for t in tasks for c in t['seed']['coverage']})
+        if 'StructuralChange' in definitions:
+            definitions['StructuralChange']['properties']['operation']['enum']=['split','remove']
     if 'CoverageClaim' in definitions and owned:
         definitions['CoverageClaim']['properties']['requirement_id']['enum'] = owned
     if 'tasks' in schema.get('properties', {}) and operation == 'outline_phase' and not owned:

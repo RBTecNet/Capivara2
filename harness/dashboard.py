@@ -38,6 +38,9 @@ STAGES = {
 }
 PIPELINE = ("Pedido", "Análise", "Entrevista", "Redação", "Revisão", "Concluído")
 PLAN_STAGES = {
+    "consolidating_phase": (4, "Consolidando threads aprovadas"),
+    "consolidating_plan": (4, "Consolidando aprovações salvas"),
+    "reassessing_task": (3, "Reavaliando a task da thread"),
     "contract_recovery": (4, "Recuperando resposta do agente"),
     "agent_recovery": (4, "Recuperando comunicação com o agente"),
     "classifying": (0, "Classificando responsabilidades"),
