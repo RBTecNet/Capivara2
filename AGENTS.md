@@ -89,6 +89,11 @@
   observações editoriais não bloqueantes de falhas funcionais; contradições do revisor
   voltam ao mesmo papel, sem refazer tasks aprovadas. Cada chamada recebe o recorte
   necessário da origem, mantendo pedido integral e histórico em disco.
+- Encaminhar problemas pela ação proposta, em qualquer fase/task: edições no escopo
+  atual são correções de conteúdo mesmo sob a categoria granularity; divisão,
+  consolidação e alteração de seeds seguem replanejamento. Findings que explicam
+  uma ação estrutural não são patches adicionais. O controlador resolve citações
+  de replanejamento pelos IDs canônicos, sem exigir cópias manuais ao modelo.
 - Preservar campos não alterados, decisões vigentes e aprovações por versão.
   Reavaliar estrutura apenas com operações concretas ou decisão específica,
   mantendo chamadas sem histórico e sem aprovação automática por tentativas.

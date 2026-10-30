@@ -198,6 +198,13 @@ observações não bloqueantes em `control/observations`; perdas de funcionalida
 ou fidelidade continuam exigindo correção e nova revisão. A resposta não precisa repetir
 booleanos de aprovação que podem contradizer os próprios problemas descritos.
 
+O encaminhamento depende da ação proposta em qualquer fase/task. Edições que ajustam
+responsabilidades dentro do escopo aprovado são correções de conteúdo, inclusive quando
+classificadas como `granularity`. Divisão, consolidação e alteração de seeds seguem o
+fluxo estrutural. Findings sem edições podem explicar um `replan` ou uma operação
+estrutural já fornecida; não são tratados como patches ausentes. O replanejamento
+informa IDs de requisitos e recebe suas citações canônicas do controlador.
+
 Cada chamada recebe apenas o recorte necessário: finalidade, restrições, requisitos e
 conteúdo da fase/task. O pedido integral e as versões aprovadas permanecem em disco,
 sem reenviar textos completos de outras fases ou cópias redundantes dos prompts.

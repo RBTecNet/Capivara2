@@ -142,12 +142,17 @@ Cada finding contém task_id, category, reason, instruction, requirement_ids e e
 category=editorial para grafia, redação, estilo ou apresentação sem mudar significado:
 registre como observação, sem bloquear. Não classifique perda de requisito como editorial.
 fidelity/coverage/test_strategy são problemas objetivos que impedem cumprir a origem.
+granularity pode indicar sobreposição de responsabilidades. Se basta ajustar o texto
+dentro do escopo aprovado, forneça edits: essa categoria não obriga a replanejar.
 edits contém field, find (trecho atual exato) e replace (substituição). find vazio acrescenta
 um item à lista ou texto ao campo. Indique um trecho único, não copie o campo inteiro.
 O harness fornece base_version, before, evidências literais e condições de aceite.
 Agrupe todos os defeitos objetivos numa passagem. Não cobre funcionalidades de outros donos.
 Alterar a estrutura usa replan (task) ou structural_changes/additions (fase), conforme schema;
-não tente fazê-lo como edição de conteúdo. Respeite a classificação aprovada.
+use essas ações somente quando for necessário dividir, consolidar, remover, adicionar
+tasks ou redefinir seeds. replan informa task_id, reason e requirement_ids; o harness
+preenche citações. Findings sem edits podem explicar uma ação estrutural já fornecida.
+Não envie edições e replanejamento para a mesma task. Respeite a classificação aprovada.
 Se format_correction existir, corrija SOMENTE a resposta incompatível. Se a resposta anterior
 reprovou com todos os critérios atendidos, esclareça quais problemas são funcionais e quais
 são editoriais usando findings. Não envie uma reprovação contraditória nem invente defeitos

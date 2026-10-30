@@ -25,10 +25,16 @@ class Finding(DocumentModel):
     edits: list[TextEdit]
 
 
+class ReplanRequest(DocumentModel):
+    task_id: str
+    reason: str = Field(min_length=1)
+    requirement_ids: list[str] = Field(min_length=1)
+
+
 class TaskReviewResponse(DocumentModel):
     summary: str = Field(min_length=1)
     findings: list[Finding]
-    replan: StructureConcern | None = None
+    replan: ReplanRequest | None = None
 
 
 class PhaseReviewResponse(DocumentModel):
@@ -55,6 +61,11 @@ def wire_schema(model, data, requirements):
                  {r.id for r in requirements.values() if r.phase_number == -1})
     if ids:
         finding['requirement_ids']['items']['enum'] = ids
+    concern = schema['$defs'].get('ReplanRequest')
+    if concern and tasks:
+        concern['properties']['task_id']['enum'] = list(tasks)
+        concern['properties']['requirement_ids']['items']['enum'] = sorted({
+            c['requirement_id'] for task in tasks.values() for c in task['seed']['coverage']})
     return schema
 
 
@@ -99,8 +110,6 @@ def apply_edits(content, edits):
 def correction(finding, task, requirements, base_version):
     if not base_version:
         raise ValueError('A versão atual da task deve ser fornecida pelo controlador.')
-    if finding.category == 'granularity':
-        raise ValueError('Divisão/consolidação exige replan ou structural_changes; não uma edição de conteúdo.')
     if not finding.edits:
         raise ValueError('Problema funcional exige edits concretos, com find/replace.')
     target = apply_edits(task['content'], finding.edits)
@@ -120,8 +129,26 @@ def correction(finding, task, requirements, base_version):
             raise ValueError('Requisito desconhecido: ' + identifier)
         evidence.append({'requirement_id': identifier, 'quote': requirements[identifier].text})
     return {'task_id': task['id'], 'base_version': base_version,
-            'category': finding.category, 'reason': finding.reason, 'instruction': finding.instruction,
+            'category': 'fidelity' if finding.category == 'granularity' else finding.category,
+            'reason': finding.reason, 'instruction': finding.instruction,
             'evidence': evidence, 'changes': changes, 'acceptance': acceptance}
+
+
+def structural_concern(request, tasks, requirements):
+    task = tasks.get(request.task_id)
+    if task is None:
+        raise ValueError('O replanejamento deve apontar uma task deste recorte.')
+    assigned = {c['requirement_id'] for c in task['seed']['coverage']}
+    evidence = []
+    for identifier in dict.fromkeys(request.requirement_ids):
+        requirement = requirements.get(identifier)
+        if requirement is None or (identifier not in assigned and requirement.phase_number != -1):
+            raise ValueError('O replanejamento deve apontar requisitos atribuídos à task.')
+        if identifier in assigned:
+            evidence.append({'requirement_id': identifier, 'quote': requirement.text})
+    if not evidence:
+        raise ValueError('O replanejamento deve apontar ao menos um requisito atribuído à task.')
+    return StructureConcern(task_id=request.task_id, reason=request.reason, evidence=evidence).model_dump()
 
 
 def normalize_review(raw, model, data, requirements):
@@ -140,7 +167,25 @@ def normalize_review(raw, model, data, requirements):
                     target = apply_edits(task['content'], [TextEdit(field=change['field'], find=change['before'], replace=change['after'])])
                     change.update(before=current, after=target[change['field']])
         return result, []
+    raw = deepcopy(raw)
+    # Respostas de versões anteriores já gravadas podem conter citações em replan.
+    # Recuperar os IDs explícitos; os bytes canônicos pertencem ao controlador.
+    old_concern = raw.get('replan')
+    if model is TaskAssessment and isinstance(old_concern, dict) and 'evidence' in old_concern:
+        legacy = StructureConcern.model_validate({k:v for k,v in old_concern.items() if k != 'requirement_ids'})
+        identifiers = list(dict.fromkeys(e.requirement_id for e in legacy.evidence))
+        if 'requirement_ids' in old_concern:
+            request = ReplanRequest.model_validate({k:v for k,v in old_concern.items() if k != 'evidence'})
+            if set(request.requirement_ids) != set(identifiers):
+                raise ValueError('O replanejamento informa requisitos contraditórios.')
+        old_concern.pop('evidence')
+        old_concern['requirement_ids'] = identifiers
     response = (TaskReviewResponse if model is TaskAssessment else PhaseReviewResponse).model_validate(raw)
+    extra = {'replan': structural_concern(response.replan, tasks, requirements) if response.replan else None} if model is TaskAssessment else {
+        'structural_changes': [c.model_dump() for c in response.structural_changes],
+        'additions': [a.model_dump() for a in response.additions]}
+    structural_tasks = ({extra['replan']['task_id']} if extra.get('replan') else set()) | {
+        identifier for change in extra.get('structural_changes', []) for identifier in change['task_ids']}
     editorial, functional = [], []
     grouped = {}
     for finding in response.findings:
@@ -148,10 +193,24 @@ def normalize_review(raw, model, data, requirements):
             raise ValueError('O problema deve apontar uma task deste recorte.')
         if finding.category == 'editorial':
             editorial.append(finding.model_dump())
-        else:
+        elif finding.edits:
+            if finding.task_id in structural_tasks:
+                raise ValueError('A mesma task recebeu edições de conteúdo e replanejamento. Escolha uma ação coerente; não é necessário replanejar para corrigir o texto dentro do escopo atual.')
             functional.append(finding)
             grouped.setdefault(finding.task_id, []).append(finding)
+        elif finding.task_id in structural_tasks:
+            # O finding explica a ação estrutural já fornecida; não é outro patch.
+            continue
+        elif finding.category == 'granularity' and model is TaskAssessment:
+            request = ReplanRequest(task_id=finding.task_id, reason=finding.reason + '\n' + finding.instruction,
+                                    requirement_ids=finding.requirement_ids)
+            extra['replan'] = structural_concern(request, tasks, requirements)
+            structural_tasks.add(finding.task_id)
+        else:
+            raise ValueError('Problema funcional sem ação: forneça edits para conteúdo ou uma ação estrutural para a task indicada.')
     corrections = []
+    if structural_tasks & grouped.keys():
+        raise ValueError('A mesma task recebeu edições de conteúdo e replanejamento. Escolha uma ação coerente; não é necessário replanejar para corrigir o texto dentro do escopo atual.')
     for task_id, findings in grouped.items():
         first = findings[0].model_copy(deep=True)
         first.edits = [e for f in findings for e in f.edits]
@@ -160,12 +219,9 @@ def normalize_review(raw, model, data, requirements):
         first.instruction = '\n'.join(f.instruction for f in findings)
         base_version = data.get('base_version') or data.get('approved_versions', {}).get(task_id)
         corrections.append(correction(first, tasks[task_id], requirements, base_version))
-    extra = {'replan': response.replan.model_dump() if response.replan else None} if model is TaskAssessment else {
-        'structural_changes': [c.model_dump() for c in response.structural_changes],
-        'additions': [a.model_dump() for a in response.additions]}
     actions = bool(corrections or extra.get('replan') or extra.get('structural_changes') or extra.get('additions'))
-    return {'approved': not actions, 'matches_source': not any(f.category == 'fidelity' for f in functional) and not bool(extra.get('replan') or extra.get('structural_changes')),
+    return {'approved': not actions, 'matches_source': not any(f.category in ('fidelity', 'granularity') for f in functional) and not bool(structural_tasks),
             'coverage_complete': not any(f.category == 'coverage' for f in functional) and not bool(extra.get('additions')),
-            'tasks_are_small': not any(f.category == 'granularity' for f in functional),
+            'tasks_are_small': not bool(structural_tasks),
             'no_test_strategy': not any(f.category == 'test_strategy' for f in functional),
             'summary': response.summary, 'corrections': corrections, **extra}, editorial
