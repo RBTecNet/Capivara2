@@ -27,17 +27,26 @@
 - Paralelismo exige isolamento, escopos de leitura/escrita sem conflitos e
   integração validada. Escopos incertos são serializados. Nunca publicar/remotar.
 - G1 confere existência; G2 fidelidade à task; G3 funcionalidade mínima da task,
-  sem testes estéticos ou suítes gerais desnecessárias. Preservar testes de uma
-  task durante as correções e registrar evidências reais de execução.
+  sem testes estéticos ou suítes gerais desnecessárias. O critério é o resultado
+  funcional pedido, não a técnica de implementação ou o formato do teste. Reutilizar
+  runners existentes, aceitar testes diretos sem wrappers/citações literais e
+  registrar evidências reais de execução.
 - Aplicação produzida pelo build fica na raiz selecionada, com README de
   instalação/execução. Estado, logs, checks e cópias temporárias ficam em .harness.
 - A prova de instalação usa runtime temporário fora da árvore do projeto para
   impedir resolução de node_modules/venv ancestrais. Seu identificador, checkpoints,
   logs e comprovantes persistentes continuam em .harness; não reutilizar runtimes
   já preparados como evidência de instalação limpa.
-- Ao concluir as tasks, conferir instalação, build/tipagem declarados e smoke curto
-  de inicialização. Falhas do projeto são corrigidas automaticamente com revisão;
-  não remover dependências, scripts ou strict para esconder erros.
+- Ao concluir as tasks, conferir instalação, build declarado e smoke curto de
+  inicialização. Typecheck separado é diagnóstico informativo quando a aplicação
+  compila e executa; registrar sua falha sem reprovar funcionamento. Não impor strict,
+  instanceof, ausência de any/casts ou configurações preferidas. Aceitar receitas de
+  instalação alternativas explícitas, documentadas e executadas em cópia limpa.
+- Reparos operacionais em dependências/configuração/testes usam os comandos reais
+  do G3 como aceite, sem aprovação textual extra. Alterações no código de negócio
+  continuam com revisão de fidelidade, recebendo conteúdo base/atual, diff e hashes.
+  Falta de contexto do revisor deve ser resolvida pelo controlador, sem obrigar
+  o escritor a refazer código correto; distinguir falhas históricas da fonte atual.
 - Se o código estiver concluído e SOMENTE a instalação de dependências externas
   estiver pendente, marcar build.status=completed com delivery_status=blocked e
   ready_to_run=false. A TUI mostra "Concluído — instalação pendente" e oferece
@@ -103,8 +112,9 @@
   contratos repetidamente inválidos exigem diagnóstico em contexto novo, com
   histórico persistido. Diagnóstico resolve a causa e nunca aprova uma task.
 - Falha G3 é diagnosticada antes de culpar o código. Checks válidos permanecem
-  congelados; erro do próprio check pode ser reparado com revisão independente,
-  preservando requisitos e vínculos requisito/arquivo, seguido de execução real.
+  registrados; erro do próprio check pode ser reparado com revisão independente,
+  preservando o comportamento solicitado sem exigir a técnica ou estrutura antiga,
+  seguido de execução real.
   Arquivar versões, certificado e resultados; reparo de check não aprova gates.
 - O brief executável deriva de TaskContent e indica donos das demais unidades.
   Citações genéricas a testes na seed não exigem suítes no G0. Usar verificações

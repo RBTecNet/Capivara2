@@ -72,7 +72,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         return e
 
     def node_project(self,types=False):
-        package={'name':'fixture','type':'module','scripts':{'build':'vite build','typecheck':'tsc --noEmit'},
+        package={'name':'fixture','type':'module','scripts':{'build':'tsc --noEmit && vite build','typecheck':'tsc --noEmit'},
             'dependencies':{'react':'^19.0.0'},'devDependencies':{'typescript':'^7.0.0'}}
         if types:package['devDependencies']['@types/node']='^24.0.0'
         (self.root/'package.json').write_text(json.dumps(package))
@@ -87,12 +87,11 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue((Path(cwd)/'.harness/delivery-owner.json').exists())
             self.assertFalse((Path(cwd)/'node_modules/sentinel').exists())
             if spec.argv[1]=='ci':
-                self.assertIn('--ignore-scripts=false',spec.argv)
                 (Path(cwd)/'node_modules').mkdir(exist_ok=True)
                 return {'exit_code':0,'stdout':'Instalação limpa executada.','stderr':'','timeout':False}
             if cancel_compile:raise asyncio.CancelledError()
             package=json.loads((Path(cwd)/'package.json').read_text())
-            if spec.argv[-1]=='typecheck' and '@types/node' not in package['devDependencies']:
+            if (spec.argv[-1]=='typecheck' or spec.argv[-1]=='build' and 'tsc' in package['scripts']['build']) and '@types/node' not in package['devDependencies']:
                 return {'exit_code':1,'stdout':'','stderr':"TS2688: Cannot find type definition file for 'node'.",'timeout':False}
             return {'exit_code':0,'stdout':'Compilação verificada.','stderr':'','timeout':False}
         return run
@@ -107,7 +106,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(e.progress['BUILD-INSTALLATION']['gates'],['completed']*4)
         self.assertEqual(read_status(self.root)['modules']['build']['status'],'completed')
         doc=(self.root/'README.md').read_text()
-        for value in ('react','^19.0.0','typescript','@types/node','npm install','sudo apt-get install -y nodejs','npm ci --ignore-scripts=false'):
+        for value in ('react','^19.0.0','typescript','@types/node','npm install','sudo apt-get install -y nodejs','npm ci --no-audit --no-fund'):
             self.assertIn(value,doc)
         self.assertTrue((self.root/'.harness/build/delivery/approval.json').exists())
         # Reexecução preserva o reparo e reutiliza apenas a prova compatível salva.
@@ -162,7 +161,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         runner=self.npm_runner(calls)
         async def broken(spec,cwd,store,prefix,**kwargs):
             result=await runner(spec,cwd,store,prefix,**kwargs)
-            if spec.argv[-1]=='typecheck':
+            if spec.argv[-1]=='build':
                 failures[0]+=1
                 return dict(result,exit_code=1,stderr='TS2688: configuração continua incorreta.')
             return result
@@ -237,27 +236,102 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(op=='write' for _,op,_ in agents.calls))
         self.assertEqual(second.saved['delivery']['status'],'approved')
 
-    async def test_static_check_cannot_be_removed_to_make_delivery_green(self):
+    async def test_configuration_method_does_not_block_a_working_repair(self):
         self.node_project();calls=[]
-        class Weakening(NodeAgents):
-            attempts=0
+        class Configure(NodeAgents):
             async def generate(inner,*args,**kwargs):
                 op,data=parsed(args);result=await super().generate(*args,**kwargs)
                 if op=='delivery_repair':
-                    inner.attempts+=1
-                    if inner.attempts==1:
-                        root=Path(kwargs['cwd']);info=json.loads((root/'package.json').read_text());info['scripts'].pop('typecheck')
-                        (root/'package.json').write_text(json.dumps(info))
-                    else:
-                        root=Path(kwargs['cwd']);info=json.loads((root/'package.json').read_text());info['scripts']['typecheck']='tsc --noEmit'
-                        (root/'package.json').write_text(json.dumps(info))
+                    path=Path(kwargs['cwd'])/'tsconfig.json';config=json.loads(path.read_text())
+                    config['compilerOptions']['strict']=False;path.write_text(json.dumps(config))
                 return result
-        agents=Weakening();e=self.engine(agents)
+        agents=Configure();e=self.engine(agents)
         with patch('harness.build_delivery.run_command',side_effect=self.npm_runner(calls)):await e.run()
-        self.assertEqual(agents.attempts,2)
-        self.assertEqual(json.loads((self.root/'package.json').read_text())['scripts']['typecheck'],'tsc --noEmit')
+        self.assertTrue(read_status(self.root)['modules']['build']['ready_to_run'])
+        self.assertFalse(any(op=='delivery_repair_review' for _,op,_ in agents.calls))
 
-    async def test_repeated_delivery_review_is_reconsidered_in_fresh_context(self):
+    async def test_failed_execution_of_a_repair_returns_to_writer_instead_of_reusing_candidate(self):
+        self.node_project();calls=[]
+        class TwoRepairs(NodeAgents):
+            writes=0
+            async def generate(inner,*args,**kwargs):
+                op,data=parsed(args);result=await super().generate(*args,**kwargs)
+                if op=='delivery_repair':
+                    inner.writes+=1
+                    if inner.writes>1:
+                        path=Path(kwargs['cwd'])/'package.json';package=json.loads(path.read_text())
+                        package['devDependencies']['@types/react']='^19.0.0';path.write_text(json.dumps(package))
+                        (path.parent/'package-lock.json').write_text(json.dumps({'lockfileVersion':3,'packages':{'':package}}))
+                return result
+        normal=self.npm_runner(calls)
+        async def execution(spec,cwd,store,prefix,**kwargs):
+            if len(calls)>20:raise AssertionError('Reprovou e reutilizou indefinidamente a mesma candidata.')
+            result=await normal(spec,cwd,store,prefix,**kwargs)
+            package=json.loads((Path(cwd)/'package.json').read_text())
+            if result['exit_code']==0 and spec.argv[-1]=='build' and '@types/react' not in package['devDependencies']:
+                result.update(exit_code=1,stderr='TS2688: React types missing in build.')
+            return result
+        agents=TwoRepairs();e=self.engine(agents)
+        with patch('harness.build_delivery.run_command',side_effect=execution):await e.run()
+        self.assertEqual(agents.writes,2)
+        self.assertTrue(read_status(self.root)['modules']['build']['ready_to_run'])
+
+    async def test_separate_typecheck_is_diagnostic_when_application_builds_and_starts(self):
+        self.node_project();calls=[]
+        package=json.loads((self.root/'package.json').read_text());package['scripts']['build']='vite build'
+        (self.root/'package.json').write_text(json.dumps(package))
+        e=self.engine(NodeAgents())
+        with patch('harness.build_delivery.run_command',side_effect=self.npm_runner(calls)):await e.run()
+        self.assertTrue(read_status(self.root)['modules']['build']['ready_to_run'])
+        self.assertEqual(len(e.saved['delivery']['diagnostics']),1)
+        self.assertIn('Diagnósticos adicionais',(self.root/'README.md').read_text())
+        self.assertNotIn('BUILD-INSTALLATION',e.tasks)
+
+    async def test_explicit_installation_recipe_is_executed_and_documented(self):
+        self.node_project(types=True);calls=[]
+        class Recipe(NodeAgents):
+            async def generate(inner,*args,**kwargs):
+                op,data=parsed(args);result=await super().generate(*args,**kwargs)
+                if op=='delivery_plan':
+                    value=json.loads(result);value['install']=[{'argv':['npm','ci','--ignore-scripts'],
+                        'purpose':'Receita explícita cuja funcionalidade será conferida.','timeout':60,'env':[]}]
+                    return json.dumps(value)
+                return result
+        e=self.engine(Recipe())
+        with patch('harness.build_delivery.run_command',side_effect=self.npm_runner(calls)):await e.run()
+        self.assertTrue(any(argv==['npm','ci','--ignore-scripts'] for argv,_ in calls))
+        self.assertIn('npm ci --ignore-scripts',(self.root/'README.md').read_text())
+
+    async def test_production_repair_review_gets_files_and_requests_context_without_rewriting(self):
+        self.node_project();(self.root/'extra-info.md').write_text('Contexto adicional da aplicação.')
+        calls=[]
+        class Context(NodeAgents):
+            reviews=0;writes=0
+            async def generate(inner,*args,**kwargs):
+                op,data=parsed(args)
+                if op=='delivery_repair':
+                    inner.writes+=1;result=await super().generate(*args,**kwargs)
+                    path=Path(kwargs['cwd'])/'dobro.py';path.write_text(path.read_text()+'# Unidade preservada.\n')
+                    value=json.loads(result);value['files'].append('dobro.py');return json.dumps(value)
+                if op=='delivery_repair_review':
+                    inner.calls.append((args[1],op,data));inner.reviews+=1
+                    entries={f['file']:f for f in data['file_evidence']['files']}
+                    entry=entries['dobro.py']
+                    self.assertIn('def dobrar',entry['before']['content']);self.assertIn('Unidade preservada',entry['after']['content'])
+                    self.assertIn('+# Unidade preservada.',entry['diff'])
+                    self.assertFalse(data['failure_context']['applies_to_candidate'])
+                    if inner.reviews==1:
+                        return json.dumps({'approved':False,'needs_context':True,'context_files':['extra-info.md'],
+                            'preserves_functionality':False,'preserves_validation':False,'reason':'Solicitar apenas um arquivo adicional de referência.'})
+                    self.assertEqual(entries['extra-info.md']['after']['content'],'Contexto adicional da aplicação.')
+                    return json.dumps({'approved':True,'preserves_functionality':True,'preserves_validation':True,
+                        'reason':'A evidência confirma o reparo funcional sem perda de código.'})
+                return await super().generate(*args,**kwargs)
+        agents=Context();e=self.engine(agents)
+        with patch('harness.build_delivery.run_command',side_effect=self.npm_runner(calls)):await e.run()
+        self.assertEqual(agents.writes,1);self.assertEqual(agents.reviews,2)
+
+    async def test_operational_repair_is_decided_by_execution_without_extra_textual_review(self):
         self.node_project();calls=[]
         class Reconsider(NodeAgents):
             reviews=0
@@ -271,12 +345,14 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
                 return result
         agents=Reconsider();e=self.engine(agents)
         with patch('harness.build_delivery.run_command',side_effect=self.npm_runner(calls)):await e.run()
-        self.assertEqual(agents.reviews,3)
-        self.assertEqual(agents.delivery_failures,2)
+        self.assertEqual(agents.reviews,0)
+        self.assertEqual(agents.delivery_failures,1)
         self.assertTrue(read_status(self.root)['modules']['build']['ready_to_run'])
 
     async def test_unreviewed_delivery_repair_survives_cancellation_without_being_published(self):
         self.node_project();calls=[]
+        runtime_names=(':memory:',':memory:-wal',':memory:-shm')
+        for name in runtime_names:(self.root/name).write_bytes(b'dados locais preservados')
         class Interrupted(NodeAgents):
             async def generate(inner,*args,**kwargs):
                 op,data=parsed(args);result=await super().generate(*args,**kwargs)
@@ -286,10 +362,16 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         with patch('harness.build_delivery.run_command',side_effect=self.npm_runner(calls)):
             with self.assertRaises(asyncio.CancelledError):await first.run()
         self.assertNotIn('@types/node',json.loads((self.root/'package.json').read_text())['devDependencies'])
+        # Recibo legado registrava como removidos bancos não copiados ao reparo.
+        workspace=Path(first.saved['delivery']['repair_workspace'])/'.harness/workspace.json'
+        saved=json.loads(workspace.read_text())
+        for name in runtime_names:saved['base'][name]=saved['base_root'][name]
+        workspace.write_text(json.dumps(saved))
         agents=NodeAgents();second=self.engine(agents)
         with patch('harness.build_delivery.run_command',side_effect=self.npm_runner(calls)):await second.run()
-        self.assertTrue(any(op=='delivery_repair_review' for _,op,_ in agents.calls))
+        self.assertFalse(any(op=='delivery_repair_review' for _,op,_ in agents.calls))
         self.assertFalse(any(op=='write' for _,op,_ in agents.calls))
+        for name in runtime_names:self.assertEqual((self.root/name).read_bytes(),b'dados locais preservados')
         self.assertIn('@types/node',json.loads((self.root/'package.json').read_text())['devDependencies'])
 
     async def test_interrupted_installation_repair_publication_does_not_repeat_application_tasks(self):

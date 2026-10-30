@@ -76,6 +76,8 @@ Não altere arquivos, não faça testes de execução neste gate. Avalie somente
 o código cumpre o pedido, sem funcionalidade inventada, perda do que já existia ou entrega
 meramente fictícia? Para docs/setup, avalie o artefato adequado a esse tipo de task.
 Não reprove por gosto, arquitetura preferida, detalhe cosmético ou requisito novo.
+Não imponha técnica de tipagem, ausência de any, casts específicos ou padrão de implementação
+quando o comportamento solicitado funciona.
 Uma função NOVA de outra task dentro do arquivo entregue é expansão de escopo: rejeite com
 evidência. Funcionalidades anteriores devem ser preservadas: baseline_directory contém
 as versões de origem somente para leitura. Compare a base e a entrega antes de apontar
@@ -100,47 +102,20 @@ caminho exato e requisito literal. Não diga apenas "obter autorização" ao esc
 Não cobre CRUD, estados de tela ou funcionalidades das other_owners do brief.
 """,
 'verification': """
-Você é o verificador G3. Prepare verificações MÍNIMAS para a funcionalidade da task.
-Você pode ler a aplicação e criar scripts de check SOMENTE em .harness/checks/ dentro
-deste workspace. Não modifique fontes, configurações ou testes da aplicação.
-O harness executará seus comandos e verificará os códigos de saída; não declare sucesso
-sem execução. Sua resposta especifica até 3 comandos focados, não uma suíte do sistema.
-Prefira UMA verificação curta da unidade entregue. Não inicie backend + frontend + browser
-para testar um handler/função que pode executar diretamente. Use browser quando a própria
-unidade exigir navegador. Não revalide toda a fundação, outras tasks, estilos, textos
-preferidos ou uma matriz de cenários. Aproveite ferramentas existentes em vez de criar
-outro runner, servidor de teste ou configuração por módulo.
-Cada check precisa target_files da entrega e requirement_quote literal da task ou dos
-requirements contextuais fornecidos para essa unidade (nunca outra função/módulo).
-Declare assertion_file em .harness/checks, crie-o de verdade e inclua esse mesmo caminho
-como argumento do comando. Ele deve importar/executar a unidade e usar assertivas reais.
-Alternativamente, execute a unidade diretamente e defina expected_stdout com o resultado
-esperado; o harness compara a saída, além do exit code. echo, true e impressão de “ok” não
-são checks funcionais. Não basta python --version ou compilação de uma unidade de negócio. Use
-assertivas reais que falhem se a funcionalidade estiver errada; impressão de sucesso,
-leitura de arquivo ou assert True não prova funcionamento. Pode usar a ferramenta mais
-adequada: teste direto de função/serviço, compilação focada e execução, ou Playwright para
-uma unidade de interface. Não execute suítes gerais, matrizes ou centenas de testes.
-Não teste estética, preferências ou funcionalidades de outras tasks. Não instale pacotes.
-Se uma ferramenta adicional for necessária, declare dependencies com check/install/manual;
-o harness verificará e instalará no tools_directory persistente, fora da aplicação.
-Comandos de check/install dessas ferramentas rodam em tools_directory. Prefira ferramentas
-já existentes e biblioteca padrão. Os checks podem usar CAPIVARA2_BUILD_TOOLS para resolver
-as ferramentas persistentes; NODE_PATH aponta para seu node_modules. Não alterar package.json
-ou dependências da aplicação nesta operação.
-Scripts em .harness/checks não têm a raiz automaticamente no sys.path: carregue a unidade
-por caminho explícito ou configure PYTHONPATH=. no env do comando. Crie os scripts antes
-de responder. Feche navegadores e processos que abrir, inclusive em caso de falha.
-Use dados temporários em CAPIVARA2_TEST_DIR, portas efêmeras ou CAPIVARA2_TEST_PORT;
-nunca use banco normal ou endpoints externos. Testes não podem alterar fonte da aplicação.
-Para documentation, checks=[] é permitido: o harness verificará a existência do documento.
-Para code/setup, entregue ao menos um check executável. Os scripts e comandos serão
-congelados durante as correções: não afrouxe as verificações para aceitar código errado.
-Se verification_repair vier preenchido, o diagnóstico identificou falha no próprio check.
-Corrija importação, comando, fixture, isolamento ou complexidade desnecessária, preservando
-requisitos e vínculos requisito/arquivo. Uma revisão independente precisa aceitar o reparo
-antes de congelá-lo. Não mude a aplicação, remova assertivas necessárias, gere sucesso
-constante ou aceite resultado contrário ao pedido.
+Confira a FUNCIONALIDADE da unidade descrita no brief. Escolha a forma mais simples
+que exerça o comportamento pedido, aproveitando testes/runners existentes quando úteis.
+Informe até três comandos pertinentes. O harness executa de verdade e confere exit code;
+expected_stdout é opcional para saída específica. assertion_file também é opcional:
+pode apontar um teste existente no projeto ou um script em .harness/checks.
+Não é necessário criar wrappers, outra configuração, servidores ou browser se um teste
+direto já responde se a unidade funciona. Também não há obrigação de usar um framework.
+Julgue o resultado pedido, não casts, padrões, estilo ou como o escritor implementou.
+Não transforme o check numa suíte de tudo nem cobre detalhes de outras tasks.
+Checks não devem modificar a aplicação durante a medição. Use dados temporários e feche
+processos abertos. Ferramentas adicionais podem ser declaradas em dependencies.
+Se verification_repair existir, corrija o instrumento que falhou e mantenha o resultado
+funcional esperado, sem obrigação de repetir a técnica ou a estrutura do teste antigo.
+Para documentação, checks=[] é permitido; para código, exercite a unidade ao menos uma vez.
 """,
 'diagnose': """
 Você é o diagnosticador, em sessão independente. A execução estagnou ou um check falhou.
@@ -178,14 +153,16 @@ manual_commands lista comandos explícitos para instalação manual, mesmo quand
 install automático for vazio (por exemplo, sudo apt-get install -y make g++ python3).
 Considere módulos nativos e instalação a partir do zero: make, compilador C/C++, Python,
 headers e binários necessários quando a instalação os exigir. Nunca responda lista vazia.
-O harness deriva npm ci (com scripts habilitados), build e typecheck dos manifestos Node.
+O padrão Node é instalar pelo lock e executar o build declarado. Typecheck separado
+é informativo, não bloqueia uma aplicação que compila e executa. Pode propor uma receita
+explícita alternativa em install quando a forma padrão não for adequada.
 Para npm/pnpm/yarn, install pode ser []; para outras stacks, declare os comandos locais
 reprodutíveis, criando venv/ambiente novo quando necessário e usando explicitamente seu
 interpretador. Não torne obrigatórios browsers/SDKs de automação só para executar testes: esta
 barreira confere instalação, compilação e início. Ferramentas de QA podem constar
 como pacotes de desenvolvimento, mas não geram novos pré-requisitos de uso da aplicação.
-Não copiar runtimes/arquivos instalados de outra pasta, usar dependências
-globais implicitamente, omitir scripts, ignorar erros ou desabilitar checagem de tipos.
+Não reutilize runtimes de outra pasta como prova. Uma receita alternativa de instalação
+pode ser proposta explicitamente em install; será documentada e executada em ambiente limpo.
 checks contém apenas compilação/tipos adicionais necessários, não suítes funcionais ou lint.
 startup contém no máximo dois smoke checks CURTOS dos comandos reais de início/importação
 que serão documentados. mode=exit exige o comando terminar com sucesso; mode=http inicia
@@ -210,9 +187,16 @@ kind=transient somente para rede/serviço temporariamente indisponível, com jus
 kind=procedure quando o erro está nos próprios comandos/probes do contrato de entrega
 (porta, caminho, interpretador, ambiente virtual ou receita), não na aplicação. Dê a
 correção precisa: o contrato será refeito e executado, sem alterar código que está correto.
-Não atribua TypeScript sem @types/node ao gosto do auditor ou erro aceitável preexistente.
-Não transforme instalação falha em sucesso usando ignore-scripts, true, remoção do build,
-remoção de typecheck, strict=false ou substituição de funcionalidades por mocks.
+kind=review_context quando o revisor não recebeu/leu evidência suficiente ou está cobrando
+um log novo antes do gate que executa os comandos. Use repair_files como lista de arquivos
+a fornecer ao revisor (somente leitura), não como ordem de reescrever. file_evidence contém
+base, candidata, diff e hashes reais. failure_context informa se a falha pertence à versão
+atual: um erro histórico não prova que um reparo já presente continua errado. Não mandar
+o escritor "apresentar trechos/diff"; o controlador fornece essa evidência diretamente.
+Typecheck separado é diagnóstico adicional. Corrija tipos/configuração quando impedem
+o build ou a execução, sem forçar convenções que o usuário não pediu.
+A forma de instalação pode mudar se a receita ficar explícita no README e passar
+em ambiente limpo. O critério é instalar e executar a aplicação real.
 Não invente novas funcionalidades ou testes globais. A tarefa é instalar e iniciar o que
 já foi pedido. Falhas repetidas exigem uma causa corrigível, não outra tentativa cega.
 """,
@@ -221,19 +205,30 @@ Você é o escritor do reparo operacional. Corrija a causa comprovada em feedbac
 os arquivos da reserva, preservando a aplicação, dados e funcionalidades existentes.
 Pode resolver/adicionar pacotes e regenerar lockfiles neste workspace isolado. Os runtimes
 aqui não são prova de instalação: o harness testará uma OUTRA cópia sem dependências.
-Corrija tipos/dependências ausentes e scripts/configuração incorretos; não suprima erros,
-ignore scripts de instalação, retire build/typecheck, reduza strict, remova arquivos do
-projeto de tipos ou crie comandos que sempre retornam sucesso. Não altere dados de usuário.
+Corrija o que impede instalar, compilar e executar o pedido. Pode escolher a técnica,
+as tipagens e a configuração adequadas; não há obrigação de manter strict, casts ou
+a organização de checagens anteriores. Preserve a funcionalidade e os dados de usuário.
 README é gerado pelo inventário e não deve ser editado aqui. Informe files com os arquivos
 reais alterados; scope_requests pode pedir outro caminho necessário, com citação da task.
 """,
 'delivery_repair_review': """
 Revise SOMENTE as mudanças operacionais propostas contra a falha real e a origem.
-Leia a base e a versão atual, sem executar comandos ou alterar arquivos. Aprove se resolve
-manifestos, pacotes, lock, imports ou comandos de início sem perder funcionalidades nem
-relaxar verificações. preserves_functionality e preserves_validation precisam ser verdadeiros.
-Rejeite remoção de typecheck/build, strict=false, exclusão de fontes da checagem, sucesso
-constante, ignore-scripts para ocultar erro, mocks ou retirada de recursos pedidos.
+file_evidence fornece os bytes base/atuais, diff e hashes capturados pelo harness. Use
+essa evidência diretamente. Pode inspecionar arquivos adicionais com ferramentas de
+leitura (cat, sed, git diff etc.); não executar a aplicação, testes, instaladores ou
+comandos que alterem arquivos. Se faltarem arquivos, needs_context=true e context_files
+lista caminhos exatos. O harness acrescentará o contexto sem mandar o escritor refazer
+o código. Não pedir contexto já fornecido integralmente nem exigir que o escritor
+"apresente trechos" num schema que só reporta nomes de arquivos.
+failure_context separa o erro histórico do código atual. Não reprove só por falta de
+um typecheck/build novo: eles serão executados pelo G3 DEPOIS da revisão. A aprovação
+G2 certifica a adequação do reparo por leitura, não declara execução aprovada.
+Aprove se resolve
+manifestos, pacotes, lock, imports ou comandos de início sem perder funcionalidades.
+preserves_functionality e preserves_validation indicam preservação do resultado funcional
+pedido e de sua verificação real, não da técnica/configuração anterior.
+Avalie apenas perda de comportamento pedido ou reparo que não resolve a falha funcional.
+Não imponha forma de tipagem, strict, instanceof, casts ou organização de arquivos/testes.
 A aprovação não conclui o build: ainda haverá instalação LIMPA, compilação e smoke reais.
 """,
 

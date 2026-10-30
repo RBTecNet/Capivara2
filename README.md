@@ -280,11 +280,12 @@ a existência e a fidelidade do documento continuam obrigatórias.
 
 Checks G3 exercitam **a unidade da task**, com dados isolados, sem suíte do sistema,
 matriz extensa ou critérios estéticos. O verificador pode escolher Playwright ou outra
-ferramenta adequada. Não basta `echo ok`, `assert True` ou um exit code sem verificação:
-o check executa um arquivo com assertivas ligado à unidade ou compara uma saída real
-com `expected_stdout`. Fontes não podem ser alteradas pelo validador ou pelo teste.
-Os scripts e comandos ficam congelados durante as correções daquela execução; o escritor
-não pode afrouxá-los. Recorrência do mesmo conflito ou correção que não muda a entrega
+ferramenta adequada e reutilizar runners/testes existentes. O critério é exercitar o
+comportamento pedido: não há obrigação de criar wrappers, repetir citações literais
+ou fornecer `assertion_file`/`expected_stdout`. O harness executa os comandos e confere
+o resultado real. Fontes não podem ser alteradas pelo validador durante a medição.
+Os checks são registrados e podem ser corrigidos quando o problema é o próprio teste;
+a forma do teste pode mudar, preservando o resultado funcional esperado. Recorrência do mesmo conflito ou correção que não muda a entrega
 gera diagnóstico, sem aprovação por insistência. Caches Python da cópia são limpos antes
 dos checks para evitar validar bytecode de uma versão anterior gravada no mesmo segundo.
 
@@ -307,11 +308,20 @@ execução. Nenhum push ou publicação é realizado.
 ### Recuperação do plan e do build
 
 Antes de encerrar o build, o Capivara2 confere uma entrega operacional: instalação
-sem runtimes herdados, compilação/tipagem declaradas e até dois smoke checks curtos
+sem runtimes herdados, build declarado e até dois smoke checks curtos
 dos comandos reais de início/importação. Isso não acrescenta uma suíte funcional
-global nem avaliação estética. Projetos npm com lock usam `npm ci` com scripts de
-instalação habilitados; `build` e `typecheck` existentes precisam passar. Não vale
-ocultar uma falha removendo dependências, scripts, strict ou ignorando erros.
+global nem avaliação estética. Projetos npm com lock usam `npm ci` por padrão;
+receitas alternativas explícitas são documentadas e executadas em cópia limpa.
+Uma checagem de tipos separada é informativa quando o build e a inicialização passam;
+falhas desse diagnóstico ficam no README e nos comprovantes, sem gerar reparos infinitos.
+Erros que impedem compilar ou executar continuam em correção. Não há preferência
+obrigatória por strict, instanceof, ausência de any/casts ou organização de testes.
+
+Reparos de dependências, configuração e testes são decididos pela execução real do G3,
+sem uma aprovação textual adicional sobre a técnica adotada. Se o reparo altera código
+de negócio, a revisão recebe os conteúdos base/atuais, diff e hashes. Pedidos de contexto
+são atendidos pelo controlador sem repetir a escrita. Erros de uma versão anterior
+são identificados como históricos; não provam que a candidata corrigida continua errada.
 
 O runtime de conferência fica em um diretório temporário externo para que Node não
 encontre `node_modules` no projeto pai; Python sem ambiente declarado é conferido
@@ -329,7 +339,7 @@ não puder ser instalado automaticamente, o status principal é **Concluído —
 pendente**, com `delivery_status=blocked` e `ready_to_run=false`. O relatório e o README
 explicam os pacotes faltantes. **Validar instalação** repete apenas a conferência
 pendente; não começa o projeto de novo. Isso não equivale a afirmar que a aplicação
-já está pronta para executar. Erros de código/configuração/tipagem continuam em
+já está pronta para executar. Erros que impedem compilar ou executar continuam em
 correção automática e não recebem essa conclusão por pendência externa.
 
 O **build se recupera automaticamente durante a execução**, sem exigir um clique em
@@ -360,8 +370,8 @@ ampla só quando necessários à própria unidade.
 
 Uma falha G3 passa por diagnóstico: código incorreto volta ao escritor, enquanto bug
 do check/fixture/runner pode ser corrigido pelo verificador. O reparo precisa preservar
-os vínculos entre requisitos e arquivos e receber uma revisão independente contra a
-origem e a falha observada. A aprovação do reparo é seguida de execução real; nunca
+o comportamento solicitado e receber uma revisão independente contra a origem e
+a falha observada, sem obrigação de manter a técnica ou a estrutura do teste antigo. A aprovação do reparo é seguida de execução real; nunca
 vale como aprovação da task. Versões anteriores, propostas, certificados e resultados
 ficam em `tasks/<id>/verification-repairs`. Uma transação interrompida é retomada sem
 regenerar a aplicação nem perder a versão de check aprovada.

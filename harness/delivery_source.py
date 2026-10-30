@@ -20,13 +20,13 @@ MANIFESTS=('package.json','package-lock.json','pnpm-lock.yaml','yarn.lock','tsco
 
 def source_tree(root):
     # Dados locais e saídas de testes não são pré-requisitos da instalação de outro usuário.
-    return {name:value for name,value in manifest(root).items() if name!='README.md'
+    return {name:value for name,value in manifest(root).items() if name!='README.md' and Path(name).name not in (':memory:',':memory:-wal',':memory:-shm')
         and not any(p in ('results','report','.cache','.egg-info') or p.endswith('.egg-info') for p in Path(name).parts)
         and not name.endswith(('.sqlite','.sqlite3','.db','.sqlite-wal','.sqlite-shm','.db-wal','.db-shm','.tsbuildinfo'))}
 
 
 def source_name(name):
-    return (name=='README.md' or not any(p in ('results','report','.cache') or p.endswith('.egg-info') for p in Path(name).parts)
+    return (name=='README.md' or Path(name).name not in (':memory:',':memory:-wal',':memory:-shm') and not any(p in ('results','report','.cache') or p.endswith('.egg-info') for p in Path(name).parts)
         and not name.endswith(('.sqlite','.sqlite3','.db','.sqlite-wal','.sqlite-shm','.db-wal','.db-shm','.tsbuildinfo')))
 
 
@@ -63,7 +63,8 @@ def command(argv,purpose):
 
 def installation(root,plan):
     package=root/'package.json'
-    if not package.exists():return plan.install
+    if plan.install:return plan.install
+    if not package.exists():return []
     try:info=json.loads(package.read_text())
     except ValueError as exc:raise BuildError('package.json inválido: '+str(exc)) from exc
     manager=info.get('packageManager','').split('@',1)[0]
@@ -75,7 +76,7 @@ def installation(root,plan):
         version=info.get('packageManager','yarn@1').split('@')[-1]
         return [command(['yarn','install','--frozen-lockfile' if version.startswith('1.') else '--immutable'],'Instalar exatamente as dependências do lockfile.')]
     if not (root/'package-lock.json').exists():raise BuildError('A entrega npm exige package-lock.json. Gere um lockfile válido antes de tentar npm ci.')
-    return [command(['npm','ci','--ignore-scripts=false','--no-audit','--no-fund'],'Instalação limpa com scripts de instalação habilitados.')]
+    return [command(['npm','ci','--no-audit','--no-fund'],'Instalação limpa com scripts de instalação habilitados.')]
 
 
 def compilation(root,plan):
@@ -134,31 +135,6 @@ def readable(command):
     return ('env '+shlex.join([f'{v.name}={v.value}' for v in command.env])+' ' if command.env else '')+shlex.join(command.argv)
 
 
-def weakened_validation(before,after):
-    errors=[]
-    for name,value in after.items():
-        if isinstance(value,dict) and 'parse_error' in value:errors.append('Corrigir o manifesto inválido '+name)
-    old=before.get('package.json',{});new=after.get('package.json',{})
-    for group in ('dependencies','devDependencies'):
-        missing=set(old.get(group,{}))-set(new.get(group,{}))
-        if missing:errors.append('Não remover dependências declaradas: '+', '.join(sorted(missing)))
-    for name in ('build','typecheck'):
-        if name in old.get('scripts',{}):
-            value=new.get('scripts',{}).get(name,'')
-            if not value or value.strip().split(' ',1)[0] in ('true','echo','printf','exit'):
-                errors.append('Não retirar/substituir por sucesso constante o script '+name)
-    for name,config in before.items():
-        if not name.startswith('tsconfig') or not isinstance(config,dict):continue
-        if name not in after:errors.append('Não remover '+name);continue
-        old_options=config.get('compilerOptions',{});new_options=after[name].get('compilerOptions',{})
-        if old_options.get('strict') and new_options.get('strict') is not True:errors.append('Não desabilitar strict em '+name)
-        if not old_options.get('noCheck') and new_options.get('noCheck'):errors.append('Não habilitar noCheck em '+name)
-        if not set(old_options.get('types',[])).issubset(new_options.get('types',[])):errors.append('Não retirar tipos requeridos de '+name)
-        if 'include' in config and not set(config['include']).issubset(after[name].get('include',[])):errors.append('Não retirar fontes da checagem em '+name)
-        if set(after[name].get('exclude',[]))-set(config.get('exclude',[])):errors.append('Não excluir fontes para ocultar erros em '+name)
-    return errors
-
-
 def readme_body(root):
     path=root/'README.md';text=path.read_text() if path.exists() else ''
     if START in text and END in text:
@@ -166,7 +142,7 @@ def readme_body(root):
     return text.rstrip()
 
 
-def render_readme(root,plan,installs,checks,status,applied):
+def render_readme(root,plan,installs,checks,status,applied,diagnostics=()):
     body=readme_body(root)
     for patch in plan.readme_changes:
         key=fingerprint(patch.model_dump())
@@ -192,5 +168,7 @@ def render_readme(root,plan,installs,checks,status,applied):
         '','### Inicialização conferida','']
     for probe in plan.startup:
         lines+=['```sh',readable(probe.command).replace('{port}',str(probe.default_port)),'```']
+    if diagnostics:
+        lines+=['','### Diagnósticos adicionais (não bloqueantes)','',*(f"- `{readable(d['command'] if hasattr(d['command'],'argv') else CommandSpec.model_validate(d['command']))}` retornou {d['exit_code']}: {d.get('observed',d.get('stderr',''))[:1500]}" for d in diagnostics),'']
     lines+=['','Os comandos de pré-requisitos referem-se à plataforma usada na validação. Mensagens e saídas reais ficam nos logs do build.',END,'']
     atomic_write(root/'README.md',body+'\n\n'+'\n'.join(lines))

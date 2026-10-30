@@ -40,7 +40,7 @@ class DeliveryPlan(DocumentModel):
 
 
 class DeliveryDiagnosis(DocumentModel):
-    kind: Literal['host_dependencies','project','procedure','transient']
+    kind: Literal['host_dependencies','project','procedure','review_context','transient']
     reason: str = Field(min_length=1)
     evidence: str = Field(min_length=1)
     dependencies: list[DeliveryRequirement]
@@ -56,12 +56,18 @@ class DeliveryDiagnosis(DocumentModel):
 
 class DeliveryRepairReview(DocumentModel):
     approved: bool
+    needs_context: bool = False
+    context_files: list[str] = Field(default_factory=list)
     preserves_functionality: bool
     preserves_validation: bool
     reason: str = Field(min_length=1)
 
     @model_validator(mode='after')
     def preserves_contract(self):
+        if self.approved and (self.needs_context or self.context_files):
+            raise ValueError('Não aprovar e solicitar contexto ao mesmo tempo.')
+        if self.context_files and not self.needs_context:
+            raise ValueError('Uma solicitação de arquivos de contexto deve usar needs_context=true.')
         if self.approved and not (self.preserves_functionality and self.preserves_validation):
-            raise ValueError('O reparo não pode remover funcionalidades nem enfraquecer instalação, build ou tipagem.')
+            raise ValueError('O reparo deve preservar o comportamento solicitado e sua comprovação funcional real.')
         return self

@@ -15,10 +15,11 @@ from .build_commands import run_command
 from .build_models import TaskScope,WriterResult
 from .build_workspace import Workspace,manifest,matches,relative_path
 from .delivery_models import DeliveryPlan,DeliveryDiagnosis,DeliveryRepairReview,DeliveryRequirement
-from .delivery_source import copy_source,source_key,source_tree,source_name,manifests,installation,compilation,render_readme,readme_body,weakened_validation
+from .delivery_source import copy_source,source_key,source_tree,source_name,manifests,installation,compilation,render_readme,readme_body
 from .delivery_run import startup,validate_command
 from .recovery import fingerprint
 from .build_recovery import DiagnosisPending
+from .delivery_evidence import repair_evidence,failure_context,operational_only
 
 
 REPAIR='BUILD-INSTALLATION'
@@ -89,7 +90,7 @@ class DeliveryGate:
         previous=self.e.saved['accepted_tree']
         if any(current.get(n)!=previous.get(n) for n in current.keys()|previous.keys() if source_name(n)):
             raise BuildError('Os arquivos da aplicação mudaram durante a validação de entrega; foram preservados.')
-        render_readme(self.project,plan,installs,checks,status,self.applied)
+        render_readme(self.project,plan,installs,checks,status,self.applied,self.record.get('diagnostics',[]))
         updated=manifest(self.project)
         self.e.saved['accepted_tree']=updated
         if self.work:
@@ -116,7 +117,7 @@ class DeliveryGate:
         from .artifacts import atomic_write
         atomic_write(path/'.harness/delivery-owner.json',json.dumps({'owner':'capivara2','id':identifier,'project':str(self.project.resolve())}))
         if saved:self.record.setdefault('clean_history',[]).append(saved)
-        self.record['clean']={'recipe':recipe,'path':str(path),'id':identifier,'results':{}}
+        self.record['clean']={'recipe':recipe,'path':str(path),'id':identifier,'source_key':source_key(self.root),'results':{}}
         self.save()
         return path
 
@@ -125,10 +126,15 @@ class DeliveryGate:
             'checks':[c.model_dump() for c in checks],'startup':[p.model_dump() for p in plan.startup]})
         root=self.clean_root(recipe);results=self.record['clean']['results']
         before=source_tree(self.root)
+        self.record['diagnostics']=[]
         for stage,commands in (('install',installs),('compile',checks),('startup',plan.startup)):
             for index,spec in enumerate(commands):
                 item=f'{stage}-{index}';expected=fingerprint(spec.model_dump())
-                if results.get(item,{}).get('command_key')==expected and results[item]['exit_code']==0:continue
+                diagnostic=(stage=='compile' and ((len(spec.argv)>=3 and spec.argv[1:3]==['run','typecheck']) or spec.argv[:2]==['node','node_modules/typescript/bin/tsc'] or any(c.kind=='typecheck' and c.command.argv==spec.argv for c in plan.checks)))
+                if results.get(item,{}).get('command_key')==expected:
+                    if results[item]['exit_code']==0:continue
+                    if results[item].get('diagnostic'):
+                        self.record['diagnostics'].append(results[item]);continue
                 self.record['execution_sequence']=self.record.get('execution_sequence',0)+1
                 prefix=f'log/delivery-{self.store.run_id}-{self.record["execution_sequence"]:04d}-{item}'
                 self.e.announce('delivery_'+stage,{'install':'Instalando em cópia sem dependências herdadas.',
@@ -136,10 +142,15 @@ class DeliveryGate:
                     'startup':'Conferindo a inicialização real da aplicação.'}[stage])
                 if stage=='startup':outcome=await startup(spec,root,self.store,prefix)
                 else:outcome=await run_command(spec,root,self.store,prefix,clean=True)
-                results[item]={**outcome,'command_key':expected,'command':spec.model_dump(),'log':prefix}
+                results[item]={**outcome,'command_key':expected,'command':spec.model_dump(),'log':prefix,'diagnostic':diagnostic}
                 self.save(status='validating')
+                if outcome['exit_code']!=0 and diagnostic:
+                    self.record['diagnostics'].append({'command':spec.model_dump(),'exit_code':outcome['exit_code'],
+                        'observed':(outcome['stderr']+'\n'+outcome['stdout'])[-8000:],'diagnostic':True})
+                    self.save()
+                    continue
                 if outcome['exit_code']!=0:
-                    return {'stage':stage,'command':spec.model_dump(),'exit_code':outcome['exit_code'],
+                    return {'stage':stage,'source_key':source_key(self.root),'command':spec.model_dump(),'exit_code':outcome['exit_code'],
                         'observed':(outcome['stderr']+'\n'+outcome['stdout'])[-16000:],'log':prefix}
                 after=source_tree(root)
                 altered=[n for n,h in before.items() if after.get(n)!=h]
@@ -149,7 +160,8 @@ class DeliveryGate:
 
     async def diagnose(self,failure):
         self.record['diagnosis_sequence']=self.record.get('diagnosis_sequence',0)+1
-        data={**self.context(),'failure':failure,'current_plan':self.record.get('plan'),'sequence':self.record['diagnosis_sequence'],
+        data={**self.context(),'failure':failure,'failure_context':failure_context(failure,self.record,self.root),
+              'file_evidence':repair_evidence(self.work,[*self.work.changes()[0],*self.e.scopes[REPAIR].writes]) if self.work else None,'current_plan':self.record.get('plan'),'sequence':self.record['diagnosis_sequence'],
               'previous_failures':self.record.get('failures',[])[-3:]}
         analysis=self.store.path(f'delivery/diagnosis-{uuid4().hex[:12]}');copy_source(self.root,analysis)
         def check(value):
@@ -170,7 +182,7 @@ class DeliveryGate:
         e.tasks[REPAIR]={'id':REPAIR,'phase_number':number,'context_policy':'fresh',
             'seed':{'scope':goal,'source_quotes':[goal],'coverage':[]},
             'content':{'title':'Instalação e entrega operacional','objective':goal,
-                'implementation_steps':[diagnosis.instruction,'Preservar todas as funcionalidades e verificações de compilação/tipos.'],
+                'implementation_steps':[diagnosis.instruction,'Preservar o comportamento solicitado; comprovar instalação, build e inicialização reais.'],
                 'deliverables':['Manifestos e arquivos operacionais necessários para instalar e iniciar a aplicação.']}}
         previous=e.scopes.get(REPAIR)
         writes=list(dict.fromkeys([*(previous.writes if previous else []),*diagnosis.repair_files]))
@@ -188,8 +200,9 @@ class DeliveryGate:
         evidence={**failure,'observed':failure['observed']+'\nReparo anterior: '+json.dumps(feedback,ensure_ascii=False)}
         decision=await self.diagnose(evidence)
         scope=self.e.scopes[REPAIR]
-        for name in decision.repair_files:
-            if name not in scope.writes:scope.writes.append(name)
+        if decision.kind!='review_context':
+            for name in decision.repair_files:
+                if name not in scope.writes:scope.writes.append(name)
         self.record['repair_diagnosis']=decision.model_dump()
         self.record['repair_scope']=scope.model_dump()
         self.e.progress[REPAIR]['diagnosis_sequence']=self.record['diagnosis_sequence']
@@ -202,6 +215,9 @@ class DeliveryGate:
             installs=installation(self.root,plan);checks=compilation(self.root,plan)
             self.document(plan,installs,checks,'reparo em andamento; conferindo dependências')
             await self.ensure_host(plan,installs,checks)
+        elif decision.kind=='review_context':
+            self.record['review_context_files']=list(dict.fromkeys([*self.record.get('review_context_files',[]),*decision.repair_files]))
+            self.record['skip_next_write']=True
         elif decision.kind=='procedure':
             self.record['procedure_revision']=self.record.get('procedure_revision',0)+1
             self.save(plan_key=None,procedure_failure={'failure':evidence,'instruction':decision.instruction})
@@ -209,26 +225,56 @@ class DeliveryGate:
         self.save()
         return {**feedback,'diagnosis':decision.model_dump()}
 
+    def review_candidate(self):
+        # Uma candidata já reprovada na execução precisa de novo reparo, não nova opinião.
+        if self.record.get('repair_approved_key')==source_key(self.work.root):return None
+        candidate=self.record.get('review_candidate')
+        if candidate and candidate.get('source_key')==source_key(self.work.root):
+            return WriterResult.model_validate(candidate['result'])
+        p=self.e.progress[REPAIR]
+        if p.get('gates',[])[:2]==['completed','completed']:
+            changes,tree=self.work.audit(self.e.scopes[REPAIR])
+            files=[name for name in changes if name in tree]
+            if files:
+                return WriterResult(summary='Retomar a candidata existente dos gates G0/G1; ainda exige revisão e execução.',files=files)
+        return None
+
+    def preserve_runtime_data(self):
+        current=manifest(self.work.root)
+        for name in self.work.base.keys()|current.keys():
+            if source_name(name):continue
+            if name in current:self.work.base[name]=current[name]
+            else:self.work.base.pop(name,None)
+        self.work.save()
+
     async def repair(self,diagnosis,failure):
         self.setup_repair(diagnosis)
         self.record['repair_failure']=failure
         self.save()
         e=self.e;p=e.progress[REPAIR];scope=e.scopes[REPAIR]
+        self.preserve_runtime_data()
+        scope.writes=[n for n in scope.writes if source_name(n)]
         feedback={'delivery_failure':failure,'diagnosis':diagnosis.model_dump()}
+        candidate=self.review_candidate()
         while True:
-            p['completed']=False;p['attempts']+=1;p['gates']=['running','waiting','waiting','waiting'];e.gate(REPAIR,0,'running')
-            self.record['repair_approved_key']=None;self.save()
             before=manifests(self.work.root)
-            data={**e.code_context(REPAIR,self.work,feedback),'manifests':before,'readiness_contract':self.record.get('plan'),'delivery_repair_attempt':p['attempts']}
-            def valid_result(value):
-                for name in value.files:relative_path(name)
-                e.validate_scope_requests(value.scope_requests,REPAIR,self.work,feedback)
-            try:result=await e.invoke('writer','delivery_repair',data,WriterResult,self.work.root,valid_result)
-            except DiagnosisPending:
-                feedback=dict(feedback,invalid_contract=p.get('failed_contract'))
-                feedback=await self.reconsider_repair(feedback,failure)
-                p['diagnosis_pending']=False;p.pop('failed_contract',None)
-                continue
+            if candidate is not None:
+                result=candidate;candidate=None
+                self.record['skip_next_write']=False
+            else:
+                p['completed']=False;p['attempts']+=1;p['gates']=['running','waiting','waiting','waiting'];e.gate(REPAIR,0,'running')
+                self.record['repair_approved_key']=None;self.save()
+                before=manifests(self.work.root)
+                data={**e.code_context(REPAIR,self.work,feedback),'manifests':before,'readiness_contract':self.record.get('plan'),'delivery_repair_attempt':p['attempts']}
+                def valid_result(value):
+                    for name in value.files:relative_path(name)
+                    e.validate_scope_requests(value.scope_requests,REPAIR,self.work,feedback)
+                try:result=await e.invoke('writer','delivery_repair',data,WriterResult,self.work.root,valid_result)
+                except DiagnosisPending:
+                    feedback=dict(feedback,invalid_contract=p.get('failed_contract'))
+                    feedback=await self.reconsider_repair(feedback,failure)
+                    p['diagnosis_pending']=False;p.pop('failed_contract',None)
+                    continue
             changes,tree=self.work.changes()
             if 'README.md' in changes:
                 self.store.write(f'delivery/readme-drafts/{self.store.run_id}-{p["attempts"]}.md',(self.work.root/'README.md').read_text() if (self.work.root/'README.md').exists() else '')
@@ -245,12 +291,6 @@ class DeliveryGate:
             if result.scope_requests and not result.files:
                 feedback=dict(feedback,scope_granted=scope.writes);continue
             changes,tree=self.work.audit(scope)
-            weakened=weakened_validation(manifests(self.project),manifests(self.work.root))
-            if weakened:
-                feedback=dict(feedback,required_change=weakened,protected_manifests=manifests(self.project))
-                if p['attempts']%2==0:feedback=await self.reconsider_repair(feedback,failure)
-                await e.recover('delivery_repair','O reparo enfraqueceu o contrato de instalação/compilação; devolvendo ao escritor.',p['attempts'],REPAIR)
-                continue
             await asyncio.to_thread(self.work.sync_sources)
             e.gate(REPAIR,0,'completed');e.gate(REPAIR,1,'running')
             if not result.files or any(not (self.work.root/name).is_file() for name in result.files):
@@ -259,13 +299,43 @@ class DeliveryGate:
                 await e.recover('delivery_repair','O escritor precisa entregar o reparo operacional.',p['attempts'],REPAIR)
                 continue
             e.gate(REPAIR,1,'completed');e.gate(REPAIR,2,'running')
-            review=await e.invoke('reviewer','delivery_repair_review',{
-                **e.code_context(REPAIR,self.work,feedback),'before_manifests':before,
-                'after_manifests':manifests(self.work.root),'changed_files':changes,'failure':failure,'delivery_repair_attempt':p['attempts'],
-                'baseline_directory':str(self.work.root/'.harness/baseline')},DeliveryRepairReview,self.work.root)
+            self.record['review_candidate']={'source_key':source_key(self.work.root),'result':result.model_dump()}
+            self.save()
+            if operational_only(changes):
+                review=DeliveryRepairReview(approved=True,preserves_functionality=True,preserves_validation=True,
+                    reason='Reparo operacional sem alteração de código de negócio; aceite depende dos comandos reais do G3.')
+                self.record['last_delivery_review']={'kind':'operational_execution','source_key':source_key(self.work.root),
+                    'files':changes,'basis':'Execução real de instalação, build e início no G3; sem aprovação textual extra.'}
+                self.save()
+            else:
+                requested=self.record.setdefault('review_context_files',[])
+                while True:
+                    evidence=repair_evidence(self.work,[*changes,*result.files,*scope.writes],requested=requested)
+                    self.record['review_sequence']=self.record.get('review_sequence',0)+1
+                    def validate_review(value):
+                        for name in value.context_files:relative_path(name)
+                        if value.needs_context and not value.context_files:
+                            raise ValueError('Indique os arquivos exatos de contexto que faltam; não devolver uma alegação genérica de falta de evidência.')
+                        provided={f['file']:f for f in evidence['files']}
+                        if value.needs_context and all(n in provided and not provided[n]['before']['truncated'] and not provided[n]['after']['truncated'] for n in value.context_files):
+                            raise ValueError('Os arquivos solicitados já estão em file_evidence com conteúdo base/atual, diff e hashes completos. Leia essa evidência; não solicitar ao escritor dados que o harness já forneceu.')
+                    review=await e.invoke('reviewer','delivery_repair_review',{
+                        **e.code_context(REPAIR,self.work,feedback),'before_manifests':before,
+                        'original_manifests':manifests(self.project),'after_manifests':manifests(self.work.root),
+                        'changed_files':changes,'file_evidence':evidence,'failure':failure,
+                        'failure_context':failure_context(failure,self.record,self.work.root),
+                        'delivery_repair_attempt':p['attempts'],'review_sequence':self.record['review_sequence'],
+                        'baseline_directory':str(self.work.root/'.harness/baseline')},DeliveryRepairReview,self.work.root,validate_review)
+                    self.record['last_delivery_review']=review.model_dump();self.save()
+                    if not review.needs_context:break
+                    requested[:]=list(dict.fromkeys([*requested,*review.context_files]))
+                    self.record['skip_next_write']=True;self.save()
+                    e.announce('delivery_review_context','Complementando o contexto do revisor, preservando o código candidato.',task_id=REPAIR)
             if not review.approved:
                 e.gate(REPAIR,2,'rejected');feedback=dict(feedback,review=review.reason)
                 if p['attempts']%2==0:feedback=await self.reconsider_repair(feedback,failure)
+                if self.record.get('skip_next_write'):candidate=self.review_candidate()
+                else:self.record.pop('review_candidate',None)
                 await e.recover('delivery_repair',review.reason,p['attempts'],REPAIR);continue
             e.gate(REPAIR,2,'completed');e.gate(REPAIR,3,'running')
             self.record['repair_scope']=scope.model_dump();self.record['repair_review']=review.model_dump()
