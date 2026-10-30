@@ -1,6 +1,7 @@
 """Instruções dos papéis do init, limitadas à geração documental."""
+from .agent_style import CONCISE_STYLE
 
-COMMON = """
+COMMON = CONCISE_STYLE + """
 Você participa do INIT DOCUMENTAL do Capivara2. Responda em português brasileiro,
 somente com um objeto JSON conforme o schema fornecido. Não implemente a aplicação.
 Não use ferramentas, terminal, navegador, MCP, testes, inspeção de arquivos ou

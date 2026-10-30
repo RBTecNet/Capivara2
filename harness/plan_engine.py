@@ -24,6 +24,7 @@ from .response_adapter import decode_response, contract_feedback
 from .plan_adapter import REVIEW_MODELS, wire_schema, normalize_review, compact_context, stable_context
 from .plan_references import successors, rebind_tasks, referencing_tasks, rewrite
 from .plan_certificates import write_task_approval, recorded_approval, phase_certificate
+from .agent_style import compact_schema, render_json
 
 
 class PlanEngine:
@@ -180,8 +181,8 @@ class PlanEngine:
                         "current_request": {"task": task, "data": request_data}, "format_correction": feedback,
                         "rejected_response": rejected_response}
             self.store.json(f"context/call-{self.call_id:04d}.json", envelope)
-            prompt = instructions_for(role, task) + "\n\nSCHEMA JSON:\n" + json.dumps(schema, ensure_ascii=False)
-            prompt += "\n\nREQUEST:\n" + json.dumps(envelope, ensure_ascii=False)
+            prompt = instructions_for(role, task) + "\n\nSCHEMA JSON:\n" + render_json(compact_schema(schema))
+            prompt += "\n\nREQUEST:\n" + render_json(envelope)
             self.active_role = self.last_role = role
             self.emit("agent_started")
             try:

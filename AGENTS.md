@@ -95,6 +95,11 @@
   Reincidência/contradição volta ao revisor para diagnóstico, sem
   aprovação por insistência. Erros de formato são recuperados na mesma operação,
   sem descartar aprovações, com espera cancelável e sem limite fixo de tentativas.
+- Agentes usam modo conciso por padrão: JSON compacto, aprovação summary=OK,
+  rejeição com defeito funcional e correção objetiva. Não narrar raciocínio nem
+  gastar análise com questões editoriais. Preservar detalhes funcionais, evidências
+  literais, código e clareza dos artefatos. Não impor gates de tamanho nem truncar
+  respostas válidas; compactar apenas representação e metadados repetidos.
 - A camada comum adapta JSON simples, blocos Markdown, envelopes e respostas nativas
   dos CLIs sem usar outro LLM como tradutor. Não adivinhar JSON ambíguo, aprovação ou
   evidência. Preservar saída original e resposta canônica para auditoria.

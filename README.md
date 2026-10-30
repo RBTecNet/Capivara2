@@ -192,6 +192,13 @@ O diagnóstico de recuperação fica em `control/response-recovery.json`; contra
 da documentação continuam exigindo correção, nunca aprovação por insistência.
 O dashboard contabiliza correções documentais e erros de contrato separadamente.
 
+Os agentes usam modo conciso por padrão, em todos os provedores: JSON compacto,
+aprovação com `summary: "OK"` e rejeição limitada ao defeito funcional e à correção
+necessária. Questões editoriais são ignoradas. Os prompts removem anotações automáticas
+de schema e metadados duplicados; a task, os requisitos e as evidências permanecem
+integrais. Essa orientação não cria limites de tamanho nem novas rejeições por
+verbosidade. Código, comandos e documentação conservam os detalhes necessários.
+
 Todos os provedores usam uma camada comum de decodificação. JSON simples, blocos Markdown,
 texto ao redor do JSON e envelopes nativos convergem para o mesmo contrato interno;
 respostas ambíguas voltam ao agente. Saídas originais e arquivos `.normalized.json` ficam

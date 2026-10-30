@@ -1,6 +1,7 @@
 """Operações de build com execução autorizada e contexto explícito por chamada."""
+from .agent_style import CONCISE_STYLE, compact_schema, render_json
 
-COMMON = """
+COMMON = CONCISE_STYLE + """
 Você participa do BUILD do CAPIVARA. Responda somente o JSON solicitado.
 Cada chamada inicia sem histórico: use a task, a origem e os arquivos do workspace.
 execution_brief delimita a unidade executável. TaskContent contém sua implementação;
@@ -238,6 +239,5 @@ A aprovação não conclui o build: ainda haverá instalação LIMPA, compilaç�
 
 
 def build_prompt(operation, data, schema):
-    import json
-    return COMMON + OPS[operation] + '\n\nSCHEMA JSON:\n' + json.dumps(schema, ensure_ascii=False) + \
-           '\n\nREQUEST:\n' + json.dumps({'operation': operation, 'data': data}, ensure_ascii=False)
+    return COMMON + OPS[operation] + '\n\nSCHEMA JSON:\n' + render_json(compact_schema(schema)) + \
+           '\n\nREQUEST:\n' + render_json({'operation': operation, 'data': data})

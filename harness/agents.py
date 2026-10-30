@@ -9,6 +9,7 @@ import signal
 from .artifacts import ArtifactStore, InitError
 from .domain import AgentSelection, PROVIDERS
 from .cli_protocols import opencode_document_config, agy_command, native_error, native_result
+from .agent_style import styled, compact_schema
 
 
 class AgentError(InitError):
@@ -71,6 +72,8 @@ class CLIAgents:
 
     async def generate(self, selection: AgentSelection, role: str, prompt: str, schema: dict,
                        store: ArtifactStore, call_id: int, *, cwd: Path | None = None, allow_tools: bool = False) -> str:
+        prompt=styled(prompt)
+        schema=compact_schema(schema)
         log_root = f".harness/{store.root.name}" if store.root.name in ("plan", "build") else ".harness"
         prefix = (f"log/{store.run_id}-{role}-{call_id:04d}" if allow_tools
                   else f"log/{role}-{call_id:04d}")

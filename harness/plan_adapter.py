@@ -102,6 +102,18 @@ def compact_context(operation, data):
         issue['recent_evidence'] = [{'version':entry['version'], 'correction':{
             k:v for k,v in entry['correction'].items() if k in ('category','reason','instruction')}}
             for entry in issue.get('recent_evidence', [])]
+    # A origem completa e a versão canônica continuam no controlador/journal.
+    # No pedido, remover apenas repetições exatas já disponíveis por ID.
+    assigned={r['id']:r for r in result.get('assigned_requirements',[])}
+    current=result.get('task')
+    if current:
+        for entry in result.get('responsibility_map',[]):
+            requirement=entry['requirement']
+            if requirement['id'] in assigned and requirement==assigned[requirement['id']]:
+                entry['requirement']={'id':requirement['id']}
+            for owner in entry['owners']:
+                if owner['task_id']==current['id'] and owner.get('scope')==current['seed']['scope']:
+                    owner.pop('scope',None)
     return result
 
 

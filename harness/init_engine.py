@@ -16,6 +16,7 @@ from .init_models import Answer, FinalPrompt, Gap, Interview, Question, Review
 from .interview_policy import internal_question_reason
 from .run_events import InitEvent
 from .response_adapter import decode_response, contract_feedback
+from .agent_style import compact_schema, render_json
 
 
 def normalized(text: str) -> str:
@@ -74,9 +75,9 @@ class InitEngine:
             self.active_role = self.last_role = role
             self.emit("agent_started")
             schema = model.model_json_schema()
-            prompt = instructions + "\n\nSCHEMA JSON:\n" + json.dumps(schema, ensure_ascii=False) + "\n\nREQUEST:\n" + json.dumps({
+            prompt = instructions + "\n\nSCHEMA JSON:\n" + render_json(compact_schema(schema)) + "\n\nREQUEST:\n" + render_json({
                 "preserved_context": history["messages"], "current_request": request,
-                "format_correction": feedback}, ensure_ascii=False)
+                "format_correction": feedback})
             try:
                 output = await self.agents.generate(selection, role, prompt, schema, self.store, self.call_id)
             except asyncio.CancelledError:

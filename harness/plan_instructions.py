@@ -1,20 +1,14 @@
 """Instruções por operação: não expor ações que o papel não pode executar."""
 
-POLICY = """
-Você participa do PLAN documental do CAPIVARA. Responda apenas JSON no schema.
-Esta é uma sessão nova; use somente os dados explícitos. Não execute ferramentas,
-comandos ou testes, não inspecione ambiente e não gere código da aplicação.
-O plan organiza fases e pequenas tasks de implementação futura, preservando o init.
-O BUILD decide livremente O QUE testar, COMO testar e QUAIS testes criar/executar,
-inclusive testes não mencionados na origem. O plan NÃO prescreve nem restringe testes,
-roteiros, cenários ou cobertura. “Preparar/implementar fluxos Playwright” também é
-especificar testes e pertence ao build. Não resolva esse limite apenas trocando verbos.
-Preserve exigências de qualidade como referências de origem; não são uma lista
-exaustiva ou um limite aos testes que o build poderá escolher.
-Validação funcional de campos, regras de negócio e infraestrutura necessária ao produto
-continuam sendo implementação. Fase 0 apenas identifica stack, dependências e finalidades
-já aprovadas; mencionar que uma ferramenta serve para testes não manda executá-los.
-Não invente funcionalidade, stack ou versões. .harness guarda artefatos; a aplicação é na raiz.
+from .agent_style import CONCISE_STYLE
+
+POLICY = CONCISE_STYLE + """
+PLAN documental. JSON conforme schema, sessão nova, somente a unidade recebida.
+Sem ferramentas, execução, testes ou código da aplicação. Preserve pedido, fases,
+stack e requisitos. .harness guarda artefatos; aplicação pertence à raiz.
+QA pertence ao BUILD: não prescreva nem restrinja testes, automação, cenários ou cobertura.
+Regras funcionais do produto e infraestrutura pedida continuam sendo implementação.
+Fase 0 cataloga stack/ferramentas e finalidades aprovadas, sem executar QA.
 """
 
 OPERATIONS = {
@@ -62,6 +56,7 @@ Se a fase inteira pertence ao build, tasks=[]. Não devolva delegações ou mude
 'write_task': """
 Você é o escritor. Redija SOMENTE a task delimitada por seed.scope e seed.coverage,
 com objetivo, até seis passos de implementação FUTURA e até quatro entregáveis concretos.
+Use ações curtas. Não repita a stack ou o escopo inteiro em cada campo; preserve detalhes indispensáveis.
 Citações podem ser amplas: não escreva todo o parágrafo nem a fase inteira.
 Use apenas referências atribuídas, stack e restrições. Não converta funcionalidades em
 mera documentação. Não crie tasks/fluxos/cenários de testes nem diga o que o build não testará.
@@ -115,29 +110,19 @@ se a proposta anterior foi rejeitada; não devolva instruções vagas ao escrito
 
 def instructions_for(role, operation):
     if operation == 'review_task':
-        scope = 'Revise só a task e seus requisitos atribuídos. Você não valida nem repara a fase.'
-        return POLICY + '\n' + scope + """
-Responda summary e findings. Sem problemas, findings=[]. Não calcule approved nem outros
-booleanos redundantes: o harness deriva o resultado dos problemas funcionais encontrados.
-Cada finding contém task_id, category, reason, instruction, requirement_ids e edits.
-category=editorial para grafia, redação, estilo ou apresentação sem mudar significado:
-registre como observação, sem bloquear. Não classifique perda de requisito como editorial.
-fidelity/coverage/test_strategy são problemas objetivos que impedem cumprir a origem.
-granularity pode indicar sobreposição de responsabilidades. Se basta ajustar o texto
-dentro do escopo aprovado, forneça edits: essa categoria não obriga a replanejar.
-edits contém field, find (trecho atual exato) e replace (substituição). find vazio acrescenta
-um item à lista ou texto ao campo. Indique um trecho único, não copie o campo inteiro.
-O harness fornece base_version, before, evidências literais e condições de aceite.
-Agrupe todos os defeitos objetivos numa passagem. Não cobre funcionalidades de outros donos.
-Alterar a estrutura usa replan (task) ou structural_changes/additions (fase), conforme schema;
-use essas ações somente quando for necessário dividir, consolidar, remover, adicionar
-tasks ou redefinir seeds. replan informa task_id, reason e requirement_ids; o harness
-preenche citações. Findings sem edits podem explicar uma ação estrutural já fornecida.
-Não envie edições e replanejamento para a mesma task. Respeite a classificação aprovada.
-Se format_correction existir, corrija SOMENTE a resposta incompatível. Se a resposta anterior
-reprovou com todos os critérios atendidos, esclareça quais problemas são funcionais e quais
-são editoriais usando findings. Não envie uma reprovação contraditória nem invente defeitos
-para sustentar o veredito anterior. A fonte e as aprovações anteriores continuam válidas.
+        return POLICY + """
+Revise apenas a task da sua thread contra scope/coverage e origem. Outros donos são
+contexto de responsabilidade, não entregas para revisar ou lacunas desta task.
+Se correta: {"summary":"OK","findings":[],"replan":null}.
+Reporte somente defeitos que impeçam cumprir o pedido. Ignore questões editoriais.
+Cada finding: task_id, category, reason curta, instruction exata, requirement_ids e edits.
+fidelity/coverage/test_strategy identificam divergência, omissão ou prescrição de QA.
+granularity com edição pontual é correção de conteúdo, não exige replanejamento.
+Cada edit: field, find literal único e replace. find vazio acrescenta texto/item.
+Use o menor trecho suficiente; o controlador preenche versões, before e evidências.
+replan só para dividir/remover/redefinir esta task: task_id, reason e requirement_ids.
+Não misture edits e replan na mesma task. Preserve classificação e aceites vigentes.
+Se houver format_correction, repare somente a resposta incompatível. Não invente defeitos
+para sustentar rejeição anterior. Não recapitule requisitos nem verificações aprovadas.
 """
-    instruction = OPERATIONS[operation]
-    return POLICY + '\n' + instruction
+    return POLICY + '\n' + OPERATIONS[operation]
