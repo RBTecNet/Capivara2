@@ -46,7 +46,7 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(outcomes),2)
         self.assertTrue(all(json.loads(p.read_text())['exit_code']==0 for p in outcomes))
         self.assertEqual(events[-1].tasks_approved,4)
-        self.assertEqual(events[-1].phases_approved,2)
+        self.assertEqual(events[-1].phases_approved,3)
         self.assertTrue(all(e.module=='build' for e in events))
 
     async def test_parallel_disjoint_tasks_and_shared_file_reservations(self):

@@ -54,6 +54,9 @@ PLAN_STAGES = {
     "completed": (5, "Finalizando"),
 }
 BUILD_STAGES = {
+    "checking_dependency":(0,"Verificando dependência"),
+    "preparing_scope":(1,"Preparando escopo da thread"),
+    "scope_prepared":(1,"Escopo da thread preparado"),
     "delivery_analysis":(4,"Levantando dependências da entrega"),
     "delivery_install":(4,"Instalação limpa"), "delivery_compile":(4,"Compilação e tipagem"),
     "delivery_startup":(4,"Inicialização operacional"), "delivery_diagnosis":(4,"Diagnosticando instalação"),

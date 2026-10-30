@@ -51,3 +51,8 @@ class InitEvent:
     task_id: str | None = None
     active_writers: int = 0
     active_reviewers: int = 0
+    environment_status: str = 'waiting'
+    environment_total: int = 0
+    environment_ready: int = 0
+    scopes_total: int = 0
+    scopes_ready: int = 0

@@ -32,7 +32,7 @@ def agy_command(selection,schema,*,allow_tools):
     settings={'artifactReviewPolicy':'always-proceed','statusLine':False,'title':False}
     if not allow_tools:
         settings['permissions']={'deny':[name+'(*)' for name in (
-            'command','read_file','write_file','read_url','execute_url','mcp','unsandboxed')]}
+            'command','run_command','manage_task','read_file','write_file','read_url','execute_url','mcp','unsandboxed')]}
     command=['agy','--input-format','stream-json','--output-format','stream-json',
         '--disable-slash-commands','--print-timeout','0','--settings',json.dumps(settings),
         '--json-schema',json.dumps(schema)]

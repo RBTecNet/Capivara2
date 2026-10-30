@@ -30,7 +30,7 @@ class BuildProgress(Vertical):
         yield Static('',id='build-heading')
         with PlanItemScroll(id='build-scroll'):
             yield Static('',id='build-rows')
-        yield Static('G0 escrita · G1 existência · G2 fidelidade · G3 funcionalidade',id='build-legend')
+        yield Static('Ambiente: status · Tasks: G0 escrita · G1 existência · G2 fidelidade · G3 funcionalidade',id='build-legend')
 
     def on_mount(self):
         self.set_interval(.5,self.blink)
@@ -48,15 +48,31 @@ class BuildProgress(Vertical):
         scroll=self.query_one(PlanItemScroll)
         follow=abs(scroll.scroll_y-self.auto_scroll_y)<1 or scroll.scroll_y>=scroll.max_scroll_y-1
         self.event=event;self.running=running
-        self.query_one('#build-summary',Static).update(f'Tasks concluídas: {event.tasks_approved}/{event.tasks_total}')
-        self.query_one(ProgressBar).update(total=max(1,event.tasks_total),progress=event.tasks_approved)
+        if event.environment_status!='completed':
+            if event.environment_status=='rejected':
+                summary=f'Ambiente: instalação pendente · {event.environment_ready}/{event.environment_total} disponíveis'
+            elif not running:
+                summary='Ambiente: aguardando retomada'
+            else:
+                summary=(f'Ambiente: {event.environment_ready}/{event.environment_total} dependências disponíveis'
+                         if event.environment_total else 'Ambiente: levantando dependências…')
+            total,progress=max(1,event.environment_total),event.environment_ready
+        elif event.scopes_total and event.scopes_ready<event.scopes_total:
+            summary=f'Escopos preparados: {event.scopes_ready}/{event.scopes_total}'
+            total,progress=event.scopes_total,event.scopes_ready
+        else:
+            summary=f'Tasks concluídas: {event.tasks_approved}/{event.tasks_total}'
+            total,progress=max(1,event.tasks_total),event.tasks_approved
+        self.query_one('#build-summary',Static).update(summary)
+        self.query_one(ProgressBar).update(total=total,progress=progress)
         self.render_rows()
         if follow:self.call_after_refresh(self.follow_active)
 
     def follow_active(self):
         if not self.event:return
         scroll=self.query_one(PlanItemScroll)
-        active=[i for i,item in enumerate(self.event.build_items) if item.kind=='task' and 'running' in item.gates]
+        active=[i for i,item in enumerate(self.event.build_items) if
+                (item.kind=='task' and 'running' in item.gates) or (item.kind=='preparation' and item.status=='running')]
         if not active:return
         scroll.scroll_to(y=max(0,active[-1]-scroll.scrollable_content_region.height+2),animate=False,immediate=True)
         self.auto_scroll_y=scroll.scroll_y
@@ -75,7 +91,7 @@ class BuildProgress(Vertical):
             name=f'{item.id} {title}' if item.kind=='phase' else f'  {item.id.split("-",1)[-1]} {title}'
             label=Text(name,style='bold #05bfd8' if item.kind=='phase' else '#b2c1c9')
             label.truncate(label_width,overflow='ellipsis',pad=True);text.append_text(label);text.append(' ')
-            if item.kind=='phase':
+            if item.kind in ('phase','preparation'):
                 if item.status=='running':text.append('●' if self.pulse or not self.running else ' ',style=COLORS['running'])
                 else:text.append_text(indicator(item.status))
             else:

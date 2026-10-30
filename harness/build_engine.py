@@ -42,16 +42,26 @@ class BuildEngine:
         self.tools_lock=asyncio.Lock()
         self.rejections={};self.executed_checks={}
         self.journal=None
+        self.scopes_total=self.scopes_ready=0
 
     def emit(self,kind='stage_changed'):
         if not self.on_event:return
-        items=[];completed_phases=0;phase_done={}
+        environment=self.saved.get('environment',{})
+        state=environment.get('status','waiting')
+        dependencies=environment.get('dependencies',[])
+        ready=sum(d.get('status')=='completed' for d in dependencies)
+        items=[BuildItem('ENV','Preparação do ambiente','phase',status=state),
+               BuildItem('ENV-INVENTORY','Levantar dependências','preparation',status=environment.get('inventory','waiting'))]
+        labels={'check':'verificando','install':'instalando','recheck':'conferindo instalação','ready':'disponível','blocked':'instalação pendente'}
+        items.extend(BuildItem(f'ENV-D{i:03d}',d['name']+' · '+labels.get(d.get('step'), 'aguardando'),
+            'preparation',status=d.get('status','waiting')) for i,d in enumerate(dependencies,1))
+        completed_phases=int(state=='completed');phase_done={}
         for phase in self.source.get('plan',{}).get('phases',[]):
             ids=[key for key,value in self.tasks.items() if value['phase_number']==phase['number']]
             done=bool(self.progress) and all(self.progress.get(key,{}).get('completed') for key in ids)
             if not ids:
-                dependencies=set(phase['depends_on'])|({0} if phase['number']>0 else set())
-                done=done and all(phase_done.get(dep,False) for dep in dependencies)
+                phase_dependencies=set(phase['depends_on'])|({0} if phase['number']>0 else set())
+                done=done and all(phase_done.get(dep,False) for dep in phase_dependencies)
             phase_done[phase['number']]=done
             started=any(self.progress.get(key,{}).get('started') for key in ids)
             status='completed' if done else 'running' if started else 'waiting'
@@ -63,19 +73,23 @@ class BuildEngine:
                     gates=tuple(p.get('gates',['waiting']*4)),status='completed' if p.get('completed') else 'waiting'))
         role=next(iter(self.active.values())) if len(self.active)==1 else None
         self.on_event(InitEvent(kind,self.stage,1+self.corrections,role,self.last_role,self.operations,self.call_id,
-            self.corrections,0,0,0,module='build',phases_total=len(self.source.get('plan',{}).get('phases',[])),
+            self.corrections,0,0,0,module='build',phases_total=1+len(self.source.get('plan',{}).get('phases',[])),
             phases_approved=completed_phases,tasks_total=len(self.tasks),
             tasks_approved=sum(p.get('completed',False) for p in self.progress.values()),
             contract_errors=self.contract_errors,build_items=tuple(items),active_agents=len(self.active),
             max_agents=self.state.max_agents if self.state.build_mode=='parallel' else 1,
             packages_total=self.packages_total,packages_ready=self.packages_ready,task_id=self.event_task_id,
-            active_writers=list(self.active.values()).count('writer'),active_reviewers=list(self.active.values()).count('reviewer')))
+            active_writers=list(self.active.values()).count('writer'),active_reviewers=list(self.active.values()).count('reviewer'),
+            environment_status=state,environment_total=len(dependencies),environment_ready=ready,
+            scopes_total=self.scopes_total,scopes_ready=self.scopes_ready))
 
     def announce(self,stage,message,**details):
         self.stage=stage;self.event_task_id=details.get('task_id');self.store.event(stage,message,**details);self.emit()
 
     def checkpoint(self):
-        self.saved.update(corrections=self.corrections,contract_errors=self.contract_errors,tasks=self.progress,blueprint={'tasks':[s.model_dump() for s in self.scopes.values()]})
+        self.saved.update(corrections=self.corrections,contract_errors=self.contract_errors)
+        if self.progress or self.scopes:self.saved['tasks']=self.progress
+        if self.scopes:self.saved['blueprint']={'tasks':[s.model_dump() for s in self.scopes.values()]}
         self.store.json('state.json',self.saved)
         self.emit('counts_changed')
 
@@ -126,7 +140,8 @@ class BuildEngine:
             self.active[call]=role;self.last_role=role;self.emit('agent_started')
             try:
                 output=await self.agents.generate(self.state.reviewer if role=='reviewer' else self.state.writer,
-                    role,build_prompt(operation,request,schema),schema,self.store,call,cwd=view.root if view else cwd,allow_tools=True)
+                    role,build_prompt(operation,request,schema),schema,self.store,call,cwd=view.root if view else cwd,
+                    allow_tools=operation not in ('environment','blueprint'))
             except AgentError as exc:
                 provider_error=exc
             except asyncio.CancelledError:
@@ -250,6 +265,9 @@ class BuildEngine:
         self.announce('scope_recovered',f'{key}: reserva ajustada com execução exclusiva; entrega seguirá pelos gates.',task_id=key)
 
     async def prepare_environment(self):
+        environment=self.saved.setdefault('environment',{})
+        environment.update(status='running',inventory='running',dependencies=[])
+        self.checkpoint()
         self.announce('dependencies','Levantando dependências do plano e verificando o ambiente.')
         directory=self.store.path('control/environment-analysis');directory.mkdir(parents=True,exist_ok=True)
         cached=self.store.read_json('control/dependencies.json')
@@ -260,11 +278,22 @@ class BuildEngine:
             'executables':{name:shutil.which(name) for name in ('node','npm','pnpm','python3','pip','uv','cargo','go','dotnet','apt-get','dnf','pacman','brew','codex','claude','opencode','agy')}},
             EnvironmentSpec,directory)
         self.store.json('control/dependencies.json',spec.model_dump())
-        await self.ensure_dependencies(spec.dependencies,self.state.project_dir)
+        environment.update(inventory='completed',dependencies=[{'name':d.name,'status':'waiting','step':'check'} for d in spec.dependencies])
+        self.checkpoint()
+        try:
+            await self.ensure_dependencies(spec.dependencies,self.state.project_dir,track_environment=True)
+        except DependenciesBlocked:
+            environment['status']='rejected';self.checkpoint()
+            raise
+        environment['status']='completed';self.checkpoint()
 
-    async def ensure_dependencies(self,dependencies,cwd):
+    async def ensure_dependencies(self,dependencies,cwd,*,track_environment=False):
         self.packages_total+=len(dependencies);missing=[];attempted=set();verified=[]
         for index,dependency in enumerate(dependencies,1):
+            entry=self.saved['environment']['dependencies'][index-1] if track_environment else None
+            if entry is not None:
+                entry.update(status='running',step='check');self.checkpoint()
+                self.announce('checking_dependency',f'Verificando dependência {index}/{len(dependencies)}: {dependency.name}.')
             prefix=f'log/dependency-{self.store.run_id}-{self.operations}-{index:03d}'
             result=await run_command(dependency.check,cwd,self.store,prefix+'-check')
             if result['exit_code']!=0:
@@ -272,9 +301,11 @@ class BuildEngine:
                     key=json.dumps(install.model_dump(),sort_keys=True)
                     if key in attempted:continue
                     attempted.add(key)
+                    if entry is not None:entry.update(step='install');self.checkpoint()
                     self.announce('installing_dependencies',f'Instalando dependência: {dependency.name}.')
                     installed=await run_command(install,cwd,self.store,prefix+f'-install-{j}')
                     if installed['exit_code']!=0:break
+                if entry is not None:entry.update(step='recheck');self.checkpoint()
                 result=await run_command(dependency.check,cwd,self.store,prefix+'-recheck')
             if result['exit_code']==0:
                 self.packages_ready+=1
@@ -282,6 +313,10 @@ class BuildEngine:
                                  'stdout':result['stdout'][-4000:],'stderr':result['stderr'][-4000:]})
             else:missing.append({'dependency':dependency.model_dump(),'exit_code':result['exit_code'],
                                  'error':result['stderr'][-3000:]})
+            if entry is not None:
+                entry.update(status='completed' if result['exit_code']==0 else 'rejected',
+                             step='ready' if result['exit_code']==0 else 'blocked')
+                self.checkpoint()
             self.emit()
         if missing:
             self.store.json('control/missing-dependencies.json',missing)
@@ -349,13 +384,20 @@ class BuildEngine:
             candidate={**collected,**{s.task_id:s for s in blueprint.tasks}}
             self.validate_graph(candidate)
         cached=self.saved.get('blueprint')
+        expected=set(self.tasks)-{'BUILD-README'}
+        if cached and {s['task_id'] for s in cached['tasks'] if s['task_id']!='BUILD-README'}!=expected:
+            cached=None
+        self.scopes_total=len(expected)
+        self.scopes_ready=0
         if cached:
             value=BuildBlueprint.model_validate({'tasks':[s for s in cached['tasks'] if s['task_id']!='BUILD-README']})
             validate(value)
+            self.scopes_ready=self.scopes_total;self.emit()
         else:
             directory=self.store.path('control/blueprint-analysis');directory.mkdir(parents=True,exist_ok=True)
             for phase in self.source['plan']['phases']:
                 for task in phase['tasks']:
+                    self.announce('preparing_scope',f'Preparando escopo {self.scopes_ready+1}/{self.scopes_total}: {task["id"]}.')
                     single={k:phase[k] for k in ('number','title','goal','depends_on')}
                     single['tasks']=[task]
                     plan={'title':self.source['plan']['title'],'objective':self.source['plan']['objective'],'phases':[single]}
@@ -364,6 +406,8 @@ class BuildEngine:
                         'product_requirements':{f'R{i:03d}':text for i,text in enumerate(self.source['init']['document']['requirements'],1)}},
                         BuildBlueprint,directory,lambda v,key=task['id']:validate(v,{key}))
                     collected.update({s.task_id:s for s in result.tasks})
+                    self.scopes_ready=len(collected)
+                    self.announce('scope_prepared',f'Escopo preparado {self.scopes_ready}/{self.scopes_total}: {task["id"]}.')
             value=BuildBlueprint(tasks=list(collected.values()))
         self.scopes={s.task_id:s for s in value.tasks}
         self.scopes['BUILD-README']=TaskScope(task_id='BUILD-README',kind='documentation',writes=['README.md','.env.example'],reads=['**'],depends_on=list(set(self.tasks)-{'BUILD-README','BUILD-INSTALLATION'}),
@@ -772,12 +816,24 @@ class BuildEngine:
                 recovery_script='build/install-manual.sh' if self.store.path('install-manual.sh').is_file() else None)
             return self.store.path('report.md')
         except DependenciesBlocked as exc:
+            environment=self.saved.setdefault('environment',{})
+            if environment.get('status')!='completed':
+                environment['status']='rejected'
+                if environment.get('inventory')!='completed':environment['inventory']='rejected'
+                if self.store.started:self.checkpoint()
             if self.store.started:
                 previous=self.store.path('report.md')
                 if previous.exists():self.store.write(f'control/reports/{self.store.run_id}.previous.md',previous.read_text())
                 self.store.write('report.md','# Build não concluído: dependências pendentes\n\n'+str(exc)+'\n')
             self.store.finish('blocked',reason=str(exc),recovery_script='build/install-manual.sh' if self.store.path('install-manual.sh').is_file() else None);raise
         except asyncio.CancelledError:
+            environment=self.saved.get('environment',{})
+            if environment.get('status')=='running':
+                environment['status']='waiting'
+                if environment.get('inventory')=='running':environment['inventory']='waiting'
+                for dependency in environment.get('dependencies',[]):
+                    if dependency.get('status')=='running':dependency['status']='waiting'
+                if self.store.started:self.checkpoint()
             self.store.finish('cancelled',reason='Build interrompido; tasks integradas foram preservadas para retomada.');raise
         except Exception as exc:
             self.store.finish('failed',reason=str(exc));raise

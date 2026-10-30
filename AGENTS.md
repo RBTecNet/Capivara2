@@ -21,6 +21,11 @@
   repositórios sem autorização.
 - `init` e `plan` são documentais. O `build` executa preparação do ambiente e
   implementação do plano aprovado, com gates G0–G3 por task.
+- A preparação do ambiente aparece como fase operacional ENV no build, sem
+  renumerar fases do plan. Mostrar inventário e cada dependência com status real.
+  Analista de ambiente e blueprint só propõem JSON, sem ferramentas; o controlador
+  executa verificações/instalações. Escrita e verificações de execução mantêm suas
+  ferramentas autorizadas. Exibir também o progresso de escopos preparados.
 - Build pode instalar dependências e executar CLIs sem confirmações, conforme
   autorização explícita do usuário. Bloqueios de instalação interrompem o build
   com pacotes exatos e script/instruções para recuperação manual.

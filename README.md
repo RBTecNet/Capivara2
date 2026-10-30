@@ -286,8 +286,10 @@ a aplicação produzida fica na **raiz do projeto selecionado**. O wizard seleci
 escritor/modelo/effort, modo **serial** ou **paralelo**, máximo de agentes (1 a 32,
 quando paralelo) e revisor compartilhado ou independente. Não há escolha de prompt.
 
-Primeiro, o builder levanta runtime, pacotes de desenvolvimento e ferramentas de
-verificação necessárias à stack. Executa check, tenta a instalação sem interação e
+Primeiro, o builder apresenta a fase operacional **ENV — Preparação do ambiente**,
+separada das fases do plan, com inventário e status de cada dependência. O agente
+apenas propõe o JSON de runtime, pacotes de desenvolvimento e ferramentas necessários
+à stack; ambiente e blueprint não liberam ferramentas ao modelo. É o controlador que executa check, tenta a instalação sem interação e
 repete o check. Comandos recebem stdin fechado e configurações não interativas;
 `sudo` automático usa `-n`. Uma dependência continua pendente se o check real falhar.
 
@@ -300,7 +302,9 @@ execute build novamente. Dependências adicionais de um check G3 são instaladas
 área de ferramentas interna, sem alterar o manifesto da aplicação durante o teste.
 CLIs ausentes precisam ser instalados/autenticados ou configurados no catálogo.
 
-O builder solicita um escopo por chamada, enviando apenas uma task do plan. O controlador
+O builder solicita um escopo por chamada, enviando apenas uma task do plan,
+sem executar ferramentas nessa análise. O dashboard informa quantos escopos já estão
+prontos, antes de iniciar G0. O controlador
 reúne os escopos e agenda as threads; nenhum modelo recebe o plano completo para isso.
 Cada worker usa uma cópia
 isolada da aplicação e das dependências locais. Reservas incluem escritas e leituras;

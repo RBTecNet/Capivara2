@@ -17,6 +17,15 @@ Não dispare subagentes ou outros CLIs: o harness controla o limite de agentes p
 Não julgue gosto visual: retoques de preferência pertencem ao usuário.
 """
 
+PREPARATION = CONCISE_STYLE + """
+Analista de preparação do BUILD. Responda somente o JSON solicitado.
+Ferramentas estão indisponíveis nesta etapa. Não execute comandos, não leia arquivos,
+não instale pacotes nem gere código. Use apenas os dados fornecidos.
+check/install são receitas para o CONTROLADOR executar depois, não ações suas.
+O controlador verifica disponibilidade e faz as instalações. Não faça sondagens próprias.
+No blueprint, mapeie somente a task recebida, sem executar sua implementação.
+"""
+
 OPS = {
 'environment': """
 A primeira medida é levantar TODAS as dependências de runtime, desenvolvimento e testes
@@ -239,5 +248,6 @@ A aprovação não conclui o build: ainda haverá instalação LIMPA, compilaç�
 
 
 def build_prompt(operation, data, schema):
-    return COMMON + OPS[operation] + '\n\nSCHEMA JSON:\n' + render_json(compact_schema(schema)) + \
+    policy=PREPARATION if operation in ('environment','blueprint') else COMMON
+    return policy + OPS[operation] + '\n\nSCHEMA JSON:\n' + render_json(compact_schema(schema)) + \
            '\n\nREQUEST:\n' + render_json({'operation': operation, 'data': data})
