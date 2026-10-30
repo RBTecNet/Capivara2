@@ -15,6 +15,7 @@ from .init_instructions import REVIEWER, WRITER
 from .init_models import Answer, FinalPrompt, Gap, Interview, Question, Review
 from .interview_policy import internal_question_reason
 from .run_events import InitEvent
+from .response_adapter import decode_response, contract_feedback
 
 
 def normalized(text: str) -> str:
@@ -98,15 +99,13 @@ class InitEngine:
             self.emit("agent_finished")
             self.store.write(f"log/{role}-{self.call_id:04d}.response.txt", output)
             try:
-                text = output.strip()
-                if text.startswith("```") and text.endswith("```"):
-                    text = "\n".join(text.splitlines()[1:-1])
-                value = model.model_validate_json(text)
+                value = model.model_validate(decode_response(output))
                 if check:
                     check(value)
+                self.store.json(f'log/{role}-{self.call_id:04d}.normalized.json', value.model_dump())
             except (ValueError, ValidationError) as exc:
                 self.corrections += 1
-                feedback = str(exc)
+                feedback = contract_feedback(exc)
                 self.store.event("format_correction", "Resposta documental devolvida para correção de formato.",
                                  call=self.call_id, role=role, detail=feedback)
                 self.emit("format_correction")

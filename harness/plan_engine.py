@@ -20,6 +20,8 @@ from .plan_instructions import instructions_for
 from .plan_models import (FinalPlan, PlannedPhase, PlanRepair, PlanReview, TaskContent, agent_schema)
 from .run_events import InitEvent, PlanItem
 from .recovery import OperationJournal, fingerprint
+from .response_adapter import decode_response, contract_feedback
+from .plan_adapter import REVIEW_MODELS, wire_schema, normalize_review, compact_context
 
 
 class PlanEngine:
@@ -95,11 +97,22 @@ class PlanEngine:
         self.store.event(stage, message, phase=self.phase_number, round=self.round)
         self.emit("stage_changed")
 
-    async def call(self, role, task, data, model, check=None, *, max_attempts=2):
+    async def call(self, role, task, data, model, check=None, *, max_attempts=None):
         feedback = ""
         rejected_response = None
         selection = self.state.reviewer if role == "reviewer" else self.state.writer
-        schema = scoped_schema(model, task, data, self.requirements)
+        schema = (wire_schema(model, data, self.requirements) if model in REVIEW_MODELS
+                  else scoped_schema(model, task, data, self.requirements))
+        request_data = compact_context(task, data)
+        def decode(output, *, record_observations=False):
+            raw = decode_response(output)
+            if model in REVIEW_MODELS:
+                raw, editorial = normalize_review(raw, model, data, self.requirements)
+                if editorial and record_observations:
+                    self.store.json(f"control/observations/{self.call_id:04d}.json", editorial)
+                    self.store.event('editorial_observation', 'Observações editoriais não bloqueantes.',
+                                     call=self.call_id, observations=editorial)
+            return model.model_validate(raw)
         key=self.journal.key(role,task,data,schema)
         self.last_operation_key=key
         record=self.journal.read(key)
@@ -111,9 +124,7 @@ class PlanEngine:
             legacy_key=fingerprint((role,task,data))
             for path in self.legacy_responses.get(legacy_key,[]):
                 try:
-                    text=path.read_text().strip()
-                    if text.startswith('```') and text.endswith('```'):text='\n'.join(text.splitlines()[1:-1])
-                    candidate=model.model_validate_json(text)
+                    candidate=decode(path.read_text())
                     if isinstance(candidate,ContractValidation) and not candidate.approved:continue
                     if isinstance(candidate,ClassificationReview) and candidate.status=='conflict':continue
                     if check:check(candidate)
@@ -126,23 +137,24 @@ class PlanEngine:
         response=record.get('response')
         if response and self.store.path(response).is_file():
             try:
-                candidate=model.model_validate_json(self.store.path(response).read_text())
+                rejected_response=self.store.path(response).read_text()
+                candidate=decode(rejected_response)
                 if check:check(candidate)
                 if ((not isinstance(candidate,ContractValidation) or candidate.approved)
                         and (not isinstance(candidate,ClassificationReview) or candidate.status!='conflict')):
                     self.journal.finish(key,candidate)
                     return candidate
-            except ValueError:pass
-        feedback=record.get('error','')
+            except ValueError as exc:feedback=contract_feedback(exc)
+        feedback=feedback or contract_feedback(record.get('error',''))
         attempt = provider_failures = 0
-        while attempt < max_attempts:
+        while max_attempts is None or attempt < max_attempts:
             self.call_id=self.journal.next_call()
             response_path=f"log/{role}-{self.call_id:04d}.response.txt"
             self.journal.start(key,role=role,operation=task,data=data,response=response_path)
             self.operations=self.journal.metrics().get('operations',0)
             # Nenhum histórico é reutilizado, nem em correções de formato.
             envelope = {"preserved_context": [], "context_policy": "fresh",
-                        "current_request": {"task": task, "data": data}, "format_correction": feedback,
+                        "current_request": {"task": task, "data": request_data}, "format_correction": feedback,
                         "rejected_response": rejected_response}
             self.store.json(f"context/call-{self.call_id:04d}.json", envelope)
             prompt = instructions_for(role, task) + "\n\nSCHEMA JSON:\n" + json.dumps(schema, ensure_ascii=False)
@@ -174,10 +186,7 @@ class PlanEngine:
             self.emit("agent_finished")
             self.store.write(f"log/{role}-{self.call_id:04d}.response.txt", output)
             try:
-                text = output.strip()
-                if text.startswith("```") and text.endswith("```"):
-                    text = "\n".join(text.splitlines()[1:-1])
-                value = model.model_validate_json(text)
+                value = decode(output, record_observations=True)
                 if check:
                     check(value)
                 if isinstance(value,ContractValidation) and not value.approved:
@@ -185,20 +194,28 @@ class PlanEngine:
                 elif isinstance(value,ClassificationReview) and value.status=='conflict':
                     self.journal.failed(key,value.summary)
                 else:self.journal.finish(key,value)
+                self.store.json(f'log/{role}-{self.call_id:04d}.normalized.json', value.model_dump())
+                recovery = self.store.read_json('control/response-recovery.json', {})
+                if recovery.get('operation') == task and recovery.get('status') == 'retrying':
+                    self.store.json('control/response-recovery.json', {**recovery, 'status': 'completed', 'resolved_call': self.call_id})
                 return value
             except PlanContractError:
                 raise
             except ValueError as exc:
-                feedback = str(exc)
-                self.journal.failed(key,exc)
+                feedback = contract_feedback(exc)
+                self.journal.failed(key,feedback)
                 rejected_response = output
                 self.contract_errors = self.journal.count('contract_errors')
                 self.store.event("format_correction", "Contrato documental devolvido ao agente.",
                                  role=role, call=self.call_id, detail=feedback)
                 self.emit("format_correction")
                 attempt += 1
-                if attempt == max_attempts:
+                if max_attempts is not None and attempt == max_attempts:
                     raise PlanContractError(f"{task}: resposta ainda inválida após uma oportunidade de corrigir o contrato. {feedback}") from exc
+                self.announce('contract_recovery', f'{task}: corrigindo apenas a resposta do agente; trabalho aprovado preservado.')
+                self.store.json('control/response-recovery.json', {'operation': task, 'call': self.call_id,
+                    'attempt': attempt, 'error': feedback, 'status': 'retrying'})
+                await asyncio.sleep(min(.25 * 2 ** min(attempt - 1, 6), 15))
 
     async def classify(self):
         raw = build_requirements(self.source["document"])

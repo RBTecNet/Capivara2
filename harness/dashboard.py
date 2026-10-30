@@ -38,6 +38,8 @@ STAGES = {
 }
 PIPELINE = ("Pedido", "Análise", "Entrevista", "Redação", "Revisão", "Concluído")
 PLAN_STAGES = {
+    "contract_recovery": (4, "Recuperando resposta do agente"),
+    "agent_recovery": (4, "Recuperando comunicação com o agente"),
     "classifying": (0, "Classificando responsabilidades"),
     "reviewing_classification": (1, "Validando responsabilidades"),
     "correcting_task": (2, "Aplicando contrato de correção"),

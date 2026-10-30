@@ -79,7 +79,16 @@
 - Devoluções exigem versão, evidência, alterações exatas e aceite verificável. Cada
   conflito tem uma aplicação pelo escritor; não reenviar o mesmo erro nem contrariar
   aceites vigentes. Reincidência/contradição é falha diagnosticada de contrato, sem
-  aprovação por insistência. Resposta inválida tem uma oportunidade de reparo.
+  aprovação por insistência. Erros de formato são recuperados na mesma operação,
+  sem descartar aprovações, com espera cancelável e sem limite fixo de tentativas.
+- A camada comum adapta JSON simples, blocos Markdown, envelopes e respostas nativas
+  dos CLIs sem usar outro LLM como tradutor. Não adivinhar JSON ambíguo, aprovação ou
+  evidência. Preservar saída original e resposta canônica para auditoria.
+- No plan, revisores retornam findings com IDs e edições find/replace. O controlador
+  preenche versões atuais, bytes before, citações e aceites verificáveis. Separar
+  observações editoriais não bloqueantes de falhas funcionais; contradições do revisor
+  voltam ao mesmo papel, sem refazer tasks aprovadas. Cada chamada recebe o recorte
+  necessário da origem, mantendo pedido integral e histórico em disco.
 - Preservar campos não alterados, decisões vigentes e aprovações por versão.
   Reavaliar estrutura apenas com operações concretas ou decisão específica,
   mantendo chamadas sem histórico e sem aprovação automática por tentativas.
@@ -101,7 +110,7 @@
   encerram o módulo nem dependem do botão tentar novamente. Corrigir automaticamente
   com evidência, logs e espera cancelável, sem limite de tentativas nem aprovação
   por insistência. Cancelamento explícito e bloqueios reais de instalação continuam
-  preservando o progresso. A regra de uma oportunidade de contrato acima é do plan.
+  preservando o progresso. Plan também recupera respostas inconsistentes automaticamente.
 - Arquivos adicionais observados em uma task exigem reserva exata e execução
   exclusiva: drenar os workers, preservar/conciliar suas versões e passar G1–G3.
   Ampliar reserva não adiciona requisitos nem aprova código fora da task original.

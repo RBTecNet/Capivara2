@@ -52,19 +52,27 @@ class ClassificationReview(DocumentModel):
             raise ValueError('corrected aprova o mapa com mudanças de responsabilidade; approved/conflict não possuem mudanças.')
         return self
 
-class FieldChange(DocumentModel):
-    field: Literal['title', 'objective', 'implementation_steps', 'deliverables']
-    before: str | list[str]
-    after: str | list[str]
-
+class ChangedField(DocumentModel):
     @model_validator(mode='after')
-    def typed_values(self):
-        expected = list if self.field in ('implementation_steps', 'deliverables') else str
-        if not isinstance(self.before, expected) or not isinstance(self.after, expected):
-            raise ValueError('before e after precisam ter o tipo do campo: texto ou lista de textos.')
+    def changed(self):
         if self.before == self.after:
             raise ValueError('Uma alteração precisa corrigir efetivamente o campo.')
         return self
+
+
+class TextFieldChange(ChangedField):
+    field: Literal['title', 'objective']
+    before: str
+    after: str
+
+
+class ListFieldChange(ChangedField):
+    field: Literal['implementation_steps', 'deliverables']
+    before: list[str]
+    after: list[str]
+
+
+FieldChange = TextFieldChange | ListFieldChange
 
 
 class AcceptanceCondition(DocumentModel):

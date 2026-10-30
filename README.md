@@ -180,9 +180,27 @@ versões e condições de aceite. O revisor certifica essa consolidação, sem o
 livre de reescrita de conteúdo aprovado. O build só é habilitado após todas as aprovações
 e os certificados íntegros. Há certificados por versão nos artefatos.
 
-Erros de JSON/schema/contrato têm uma oportunidade de reparo. Uma segunda resposta inválida
-encerra a operação com `control/contract-failure.json`, em vez de repetir indefinidamente.
+Erros de JSON/schema e respostas inconsistentes são recuperados automaticamente na mesma
+operação, com espera cancelável, sem limite fixo de tentativas e sem refazer tasks aprovadas.
+O diagnóstico de recuperação fica em `control/response-recovery.json`; contradições reais
+da documentação continuam exigindo correção, nunca aprovação por insistência.
 O dashboard contabiliza correções documentais e erros de contrato separadamente.
+
+Todos os provedores usam uma camada comum de decodificação. JSON simples, blocos Markdown,
+texto ao redor do JSON e envelopes nativos convergem para o mesmo contrato interno;
+respostas ambíguas voltam ao agente. Saídas originais e arquivos `.normalized.json` ficam
+nos logs. Não é necessário outro modelo como tradutor.
+
+O revisor do plan informa `findings` com categoria, IDs dos requisitos e edições
+`find/replace`. Versões, valores anteriores, citações e condições de aceite são preenchidos
+pelo controlador. Grafia e preferências de apresentação sem mudança de sentido são
+observações não bloqueantes em `control/observations`; perdas de funcionalidade, cobertura
+ou fidelidade continuam exigindo correção e nova revisão. A resposta não precisa repetir
+booleanos de aprovação que podem contradizer os próprios problemas descritos.
+
+Cada chamada recebe apenas o recorte necessário: finalidade, restrições, requisitos e
+conteúdo da fase/task. O pedido integral e as versões aprovadas permanecem em disco,
+sem reenviar textos completos de outras fases ou cópias redundantes dos prompts.
 
 O plan não entrevista o usuário, gera código, verifica dependências instaladas ou
 executa testes. Suas verificações se limitam à correspondência entre os documentos.

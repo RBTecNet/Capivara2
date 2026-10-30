@@ -20,6 +20,7 @@ from .build_workspace import Workspace, conflicts, diff, manifest, matches, rela
 from .plan_models import agent_schema
 from .run_events import BuildItem, InitEvent
 from .recovery import OperationJournal
+from .response_adapter import decode_response, contract_feedback
 from .build_review import evidence_catalog, fidelity_schema, requirement_quotes, resolve_references
 
 
@@ -148,16 +149,15 @@ class BuildEngine:
                 continue
             if snapshot:self.close_audit(snapshot)
             try:
-                text=output.strip()
-                if text.startswith('```') and text.endswith('```'):text='\n'.join(text.splitlines()[1:-1])
-                raw=json.loads(text)
+                raw=decode_response(output)
                 if operation=='fidelity':raw=resolve_references(raw,data['evidence_catalog'])
                 value=model.model_validate(raw)
                 if check:check(value)
+                self.store.json(f'log/{role}-{call:04d}.normalized.json', value.model_dump())
                 self.journal.finish(key,value)
                 return value
             except ValueError as exc:
-                self.contract_errors+=1;feedback=str(exc);rejected=output
+                self.contract_errors+=1;feedback=contract_feedback(exc);rejected=output
                 self.journal.failed(key,exc)
                 if self.progress:self.checkpoint()
                 task_id=data.get('task',{}).get('id')

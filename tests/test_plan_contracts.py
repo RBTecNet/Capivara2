@@ -1,6 +1,7 @@
 from copy import deepcopy
 import json
 import unittest
+from unittest.mock import patch, AsyncMock
 
 from harness.artifacts import read_status, suggested_module
 from harness.plan_contracts import (ContentCorrection, PlanContractError, TaskAssessment,
@@ -92,19 +93,19 @@ class CorrectionContractTests(unittest.IsolatedAsyncioTestCase):
         book.verify(task,approved=True)
         self.assertEqual(book.records[identifier]['status'],'verified')
 
-    async def test_format_failure_gets_one_repair_then_diagnostic_without_loop_or_approval(self):
-        agents=PlanAgents();agents.invalid=20
+    async def test_format_failures_recover_same_operation_without_losing_work_or_implicit_approval(self):
+        agents=PlanAgents();agents.invalid=3
         engine=PlanEngine(self.state,agents)
-        with self.assertRaisesRegex(PlanContractError,'uma oportunidade'):
+        with patch('harness.plan_engine.asyncio.sleep', new=AsyncMock()):
             await engine.run()
-        self.assertEqual(len(agents.calls),2)
-        self.assertEqual(engine.contract_errors,2)
+        self.assertEqual(engine.contract_errors,3)
         self.assertEqual(engine.corrections,0)
         self.assertEqual(agents.calls[1][1]['rejected_response'],'resposta inválida')
         self.assertEqual(agents.calls[1][1]['preserved_context'],[])
-        self.assertTrue((self.root/'.harness/plan/control/contract-failure.json').exists())
-        self.assertEqual(read_status(self.root)['modules']['plan']['status'],'failed')
-        self.assertFalse((self.root/'.harness/plan/final.md').exists())
+        self.assertEqual(read_status(self.root)['modules']['plan']['status'],'completed')
+        recovery=json.loads((self.root/'.harness/plan/control/response-recovery.json').read_text())
+        self.assertEqual(recovery['status'],'completed')
+        self.assertEqual([e['current_request']['task'] for _,e in agents.calls[:4]], ['classify_work']*4)
 
     async def test_approved_patch_is_enforced_if_writer_ignores_it_without_a_second_attempt(self):
         agents=PlanAgents();agents.ignore_correction=True

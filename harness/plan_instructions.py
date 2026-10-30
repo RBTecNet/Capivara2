@@ -73,38 +73,6 @@ os campos não alterados. Responda o TaskContent completo. Não altere seed, esc
 condições de aceite, não reinterprete a exigência e não escreva uma alternativa equivalente.
 Esta é a única aplicação deste conflito. O contrato já foi conferido contra a origem.
 """,
-'review_task': """
-Revise APENAS seed.scope/coverage da única task. Não cobre partes de outras tasks,
-parágrafos inteiros ou preferências editoriais. Classificação aprovada não é renegociável.
-Detalhes coerentes com a stack e necessários ao entregável não são novos requisitos.
-Os contratos de correção ativos são critérios de aceite vigentes. Se já satisfeitos,
-não reabra o mesmo defeito ou imponha o contrário. Uma contradição precisa de diagnóstico,
-não de nova tentativa do escritor. Reúna TODOS os defeitos objetivos num único contrato.
-Se correta, aprove com corrections=[] e replan=null. Para erro de CONTEÚDO, corrections
-contém uma única correção com task_id, base_version fornecido, categoria, razão/instrução,
-evidence literal com requirement_id, changes por campo (before/after EXATOS) e acceptance.
-Condições acceptance são contains/excludes sobre os campos alterados: precisam estar
-FALSAS no conteúdo atual e VERDADEIRAS no after. Cubra cada campo modificado com condições
-concretas que descrevam a solução. Não mude campos sem necessidade. Não altere a seed.
-Se precisar dividir/consolidar/remover/redefinir a seed, replan aponta a task, motivo e
-evidência literal; corrections fica vazio. O escritor não executa operações estruturais.
-Não devolva additions, structural_changes, delegations ou instruções vagas de reavaliação.
-""",
-'review_phase': """
-Revise a cobertura COLETIVA da fase contra a origem. Respeite os responsáveis já
-classificados: build não é omissão; collective é satisfeito pelo conjunto, sem task própria.
-Tasks/versões já aprovadas e seus contratos não podem ser reabertos por mera preferência.
-Só tasks[].content é trabalho gerado; phase_source/source são textos citados da origem,
-NÃO são instruções das tasks. Requisitos build são responsabilidade preservada, NÃO lacuna.
-Não adicione tarefas para verificar integração, Playwright, evidências ou outros IDs build.
-Eles nem são IDs válidos para novas seeds. Não reinterpretar a classificação já aprovada.
-Aprove se fiel, pequeno e completo. Se houver erro objetivo de conteúdo antes não detectado,
-corrections contém contratos completos como descrito a seguir; use base_version de
-approved_versions. Para estrutura, devolva operações concretas em structural_changes:
-remove exige IDs existentes e replacements=[]; split troca um ID por >=2 seeds;
-merge troca >=2 IDs da mesma fase por uma seed. Preserve cobertura e âncoras existentes.
-additions somente para responsabilidade realmente ausente. Não mude classificação.
-""",
 'validate_completion': """
 Esta é uma CONFERÊNCIA DE CONCLUSÃO das validações já realizadas e aprovadas.
 Você recebe fonte, mapa de responsabilidades e certificados/versões, não novas tasks para
@@ -164,6 +132,27 @@ trabalho da task um requisito build, coletivo ou atribuído a outra task.
 
 
 def instructions_for(role, operation):
+    if operation in ('review_task', 'review_phase'):
+        scope = ('Revise só a task e seus requisitos atribuídos.' if operation == 'review_task' else
+                 'Revise a cobertura coletiva desta fase; preserve as tasks/versões já aprovadas.')
+        return POLICY + '\n' + scope + """
+Responda summary e findings. Sem problemas, findings=[]. Não calcule approved nem outros
+booleanos redundantes: o harness deriva o resultado dos problemas funcionais encontrados.
+Cada finding contém task_id, category, reason, instruction, requirement_ids e edits.
+category=editorial para grafia, redação, estilo ou apresentação sem mudar significado:
+registre como observação, sem bloquear. Não classifique perda de requisito como editorial.
+fidelity/coverage/test_strategy são problemas objetivos que impedem cumprir a origem.
+edits contém field, find (trecho atual exato) e replace (substituição). find vazio acrescenta
+um item à lista ou texto ao campo. Indique um trecho único, não copie o campo inteiro.
+O harness fornece base_version, before, evidências literais e condições de aceite.
+Agrupe todos os defeitos objetivos numa passagem. Não cobre funcionalidades de outros donos.
+Alterar a estrutura usa replan (task) ou structural_changes/additions (fase), conforme schema;
+não tente fazê-lo como edição de conteúdo. Respeite a classificação aprovada.
+Se format_correction existir, corrija SOMENTE a resposta incompatível. Se a resposta anterior
+reprovou com todos os critérios atendidos, esclareça quais problemas são funcionais e quais
+são editoriais usando findings. Não envie uma reprovação contraditória nem invente defeitos
+para sustentar o veredito anterior. A fonte e as aprovações anteriores continuam válidas.
+"""
     instruction = OPERATIONS[operation]
     if operation in ('review_phase', 'review_plan'):
         instruction += COLLECTIVE_CONTRACT
