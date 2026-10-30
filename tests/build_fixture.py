@@ -81,6 +81,18 @@ class Builders:
             if self.cancel:raise asyncio.CancelledError()
             await asyncio.sleep(self.delay)
             if op=='environment':return json.dumps({'dependencies':self.dependencies})
+            if op=='delivery_plan':
+                return json.dumps({'summary':'Biblioteca Python sem dependências externas.',
+                    'prerequisites':[{'name':'Python 3','purpose':'Executar a biblioteca.',
+                        'check':{'argv':[sys.executable,'--version'],'purpose':'Conferir Python.','timeout':10,'env':[]},
+                        'install':[],'manual_instructions':'Instale Python 3 pelo gerenciador do sistema.',
+                        'manual_commands':[{'argv':['sudo','apt-get','install','-y','python3'],'purpose':'Instalar Python no Linux.','timeout':60,'env':[]}]}],
+                    'install':[],'checks':[],
+                    'startup':[{'command':{'argv':['python3','-c','import dobro,triplo; assert dobro.dobrar(3)==6; assert triplo.triplicar(3)==9'],
+                        'purpose':'Importar e usar a biblioteca instalada.','timeout':10,'env':[]},
+                        'mode':'exit','path':'/','status':200,'default_port':3000,'expected_text':None,'expected_stdout':None}],
+                    'readme_changes':[]})
+
             if op=='diagnose':
                 history=data.get('recent_failures') or []
                 failure=(history[-1]['feedback'] if history else data.get('feedback')) or {}

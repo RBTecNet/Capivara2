@@ -124,6 +124,7 @@ class InitExecutionStep(Step):
         self.error("")
         self.query_one(InitDashboard).start()
         self.query_one("#back", Button).label = "Interromper · Esc"
+        self.query_one("#init-retry", Button).label = "Tentar novamente"
         for button in self.query("#init-retry, #init-close, #init-view"):
             button.display = False
         self.execute()
@@ -156,8 +157,12 @@ class InitExecutionStep(Step):
                 self.engine = InitEngine(self.wizard.state, self.wizard.agents, interview=self.ask, on_event=self.execution_event)
             self.final_path = await self.engine.run()
             self.query_one(InitDashboard).finish("completed")
-            self.progress("Build concluído. Aplicação e README entregues na raiz; relatório em .harness/build/report.md" if self.module=="build" else "Plan concluído. Plano aprovado: .harness/plan/final.md" if self.module == "plan"
+            pending=self.module=='build' and self.engine.saved.get('delivery',{}).get('status')=='blocked'
+            self.progress("Build concluído — instalação pendente. Instale os pacotes indicados no README; Validar instalação preserva as tasks concluídas." if pending else "Build concluído. Aplicação e README entregues na raiz; relatório em .harness/build/report.md" if self.module=="build" else "Plan concluído. Plano aprovado: .harness/plan/final.md" if self.module == "plan"
                           else "Init concluído. Prompt aprovado: .harness/prompts/final.md")
+            if pending:
+                self.query_one("#init-retry",Button).label="Validar instalação"
+                self.query_one("#init-retry",Button).display=True
             self.query_one("#init-view", Button).display = True
         except asyncio.CancelledError:
             if self.is_mounted and self.is_current:

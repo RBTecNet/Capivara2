@@ -19,6 +19,11 @@ class DependenciesBlocked(BuildError):
     pass
 
 
+class DeliveryDependenciesPending(DependenciesBlocked):
+    """Código concluído; somente pré-requisitos externos da instalação estão pendentes."""
+    pass
+
+
 def load_plan(project_dir):
     source = load_init(project_dir)
     if not plan_completed(project_dir,source['source_prompt_sha256']):

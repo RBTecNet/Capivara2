@@ -167,6 +167,76 @@ fontes/checks. Rejeição indica correção exata do instrumento. Aprovar aqui N
 o harness ainda executará os checks reparados.
 """,
 
+'delivery_plan': """
+Prepare o CONTRATO OPERACIONAL da entrega pronta. Leia manifestos e README no diretório
+atual, que não contém node_modules/venv herdados. Não altere arquivos nem instale pacotes.
+Liste em prerequisites TODOS os pré-requisitos de runtime, gerenciador de pacotes,
+compiladores/SDKs e bibliotecas de sistema necessários, mesmo os já presentes. Cada item
+contém check real, install não interativo e manual_instructions com os pacotes exatos,
+versões mínimas pertinentes e comandos adequados ao sistema operacional informado.
+manual_commands lista comandos explícitos para instalação manual, mesmo quando o
+install automático for vazio (por exemplo, sudo apt-get install -y make g++ python3).
+Considere módulos nativos e instalação a partir do zero: make, compilador C/C++, Python,
+headers e binários necessários quando a instalação os exigir. Nunca responda lista vazia.
+O harness deriva npm ci (com scripts habilitados), build e typecheck dos manifestos Node.
+Para npm/pnpm/yarn, install pode ser []; para outras stacks, declare os comandos locais
+reprodutíveis, criando venv/ambiente novo quando necessário e usando explicitamente seu
+interpretador. Não torne obrigatórios browsers/SDKs de automação só para executar testes: esta
+barreira confere instalação, compilação e início. Ferramentas de QA podem constar
+como pacotes de desenvolvimento, mas não geram novos pré-requisitos de uso da aplicação.
+Não copiar runtimes/arquivos instalados de outra pasta, usar dependências
+globais implicitamente, omitir scripts, ignorar erros ou desabilitar checagem de tipos.
+checks contém apenas compilação/tipos adicionais necessários, não suítes funcionais ou lint.
+startup contém no máximo dois smoke checks CURTOS dos comandos reais de início/importação
+que serão documentados. mode=exit exige o comando terminar com sucesso; mode=http inicia
+um serviço local e confere path/status/expected_text, sem navegador ou matrizes de cenários.
+Para servidores, PORT e DATABASE_PATH serão definidos pelo harness. Use {port} em argumentos
+que exigem porta, como Vite --port {port}; default_port é a porta real sugerida no README.
+Não usar scripts ainda inexistentes em .harness. O supervisor cuida de HTTP, timeout e
+encerramento. Não afirme sucesso: os comandos serão executados de verdade.
+readme_changes corrige apenas instruções concretamente incompatíveis/desatualizadas, por
+substituições literais before/after com reason; preserve exemplos e funcionalidades úteis.
+O inventário de pacotes/versões/comandos será renderizado pelo harness no README.
+""",
+'delivery_diagnosis': """
+Diagnostique a falha REAL da entrega com base em failure.observed, manifestos e sistema.
+Não execute comandos nem altere arquivos. evidence deve ser trecho literal da saída.
+kind=host_dependencies quando faltam pacotes/ferramentas do sistema: devolva dependencies
+com nomes exatos, checks reais, instalação não interativa e comandos manuais. O harness
+instala quando possível e bloqueia a conclusão com instruções se não houver permissão.
+kind=project para dependência não declarada, lock inválido, import/tipagem/build quebrado,
+script de início errado: liste repair_files exatos e instrução resolutiva ao escritor.
+kind=transient somente para rede/serviço temporariamente indisponível, com justificativa.
+kind=procedure quando o erro está nos próprios comandos/probes do contrato de entrega
+(porta, caminho, interpretador, ambiente virtual ou receita), não na aplicação. Dê a
+correção precisa: o contrato será refeito e executado, sem alterar código que está correto.
+Não atribua TypeScript sem @types/node ao gosto do auditor ou erro aceitável preexistente.
+Não transforme instalação falha em sucesso usando ignore-scripts, true, remoção do build,
+remoção de typecheck, strict=false ou substituição de funcionalidades por mocks.
+Não invente novas funcionalidades ou testes globais. A tarefa é instalar e iniciar o que
+já foi pedido. Falhas repetidas exigem uma causa corrigível, não outra tentativa cega.
+""",
+'delivery_repair': """
+Você é o escritor do reparo operacional. Corrija a causa comprovada em feedback usando
+os arquivos da reserva, preservando a aplicação, dados e funcionalidades existentes.
+Pode resolver/adicionar pacotes e regenerar lockfiles neste workspace isolado. Os runtimes
+aqui não são prova de instalação: o harness testará uma OUTRA cópia sem dependências.
+Corrija tipos/dependências ausentes e scripts/configuração incorretos; não suprima erros,
+ignore scripts de instalação, retire build/typecheck, reduza strict, remova arquivos do
+projeto de tipos ou crie comandos que sempre retornam sucesso. Não altere dados de usuário.
+README é gerado pelo inventário e não deve ser editado aqui. Informe files com os arquivos
+reais alterados; scope_requests pode pedir outro caminho necessário, com citação da task.
+""",
+'delivery_repair_review': """
+Revise SOMENTE as mudanças operacionais propostas contra a falha real e a origem.
+Leia a base e a versão atual, sem executar comandos ou alterar arquivos. Aprove se resolve
+manifestos, pacotes, lock, imports ou comandos de início sem perder funcionalidades nem
+relaxar verificações. preserves_functionality e preserves_validation precisam ser verdadeiros.
+Rejeite remoção de typecheck/build, strict=false, exclusão de fontes da checagem, sucesso
+constante, ignore-scripts para ocultar erro, mocks ou retirada de recursos pedidos.
+A aprovação não conclui o build: ainda haverá instalação LIMPA, compilação e smoke reais.
+""",
+
 }
 
 

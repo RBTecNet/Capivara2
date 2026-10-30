@@ -121,10 +121,13 @@ def sync_tree(root):
 
 
 class Workspace:
-    def __init__(self,project,store,task_id):
+    def __init__(self,project,store,task_id,*,runtimes=True,source_only=False):
         self.project=project
         self.root=store.path(f'work/{task_id}-{uuid4().hex[:10]}')
-        self.base_root=copy_project(project,self.root)
+        if source_only:
+            from .delivery_source import copy_source
+            self.base_root=manifest(project);copy_source(project,self.root)
+        else:self.base_root=copy_project(project,self.root,runtimes=runtimes)
         self.base=manifest(self.root)
         (self.root/'.harness/checks').mkdir(parents=True,mode=0o700)
         copy_project(self.root,self.root/'.harness/baseline',runtimes=False)

@@ -6,12 +6,18 @@ from pathlib import Path
 import signal
 
 
-async def run_command(spec,cwd,store,prefix, *, test=False):
+async def run_command(spec,cwd,store,prefix, *, test=False, clean=False):
     argv=list(spec.argv)
     if Path(argv[0]).name=='sudo' and '-n' not in argv: argv.insert(1,'-n')
     env=dict(os.environ) if not test else {k:v for k,v in os.environ.items()
         if k in ('PATH','HOME','LANG','LC_ALL','DISPLAY','WAYLAND_DISPLAY','XDG_RUNTIME_DIR','PLAYWRIGHT_BROWSERS_PATH')}
     env.update({v.name:v.value for v in spec.env})
+    if clean:
+        for name in ('NODE_PATH','NODE_OPTIONS','PYTHONPATH','PYTHONHOME','VIRTUAL_ENV','CONDA_PREFIX'):
+            env.pop(name,None)
+        env['PATH']=os.pathsep.join(p for p in env.get('PATH','').split(os.pathsep)
+            if not any(part in ('node_modules','.venv','venv','__pypackages__') for part in Path(p).parts))
+        env.update(npm_config_ignore_scripts='false',NPM_CONFIG_IGNORE_SCRIPTS='false')
     env.update(PWD=str(cwd.resolve()),CI='1',PIP_NO_INPUT='1',GIT_TERMINAL_PROMPT='0',DEBIAN_FRONTEND='noninteractive',NO_COLOR='1')
     if test:
         env['PYTHONDONTWRITEBYTECODE']='1'

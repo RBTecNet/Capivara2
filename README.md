@@ -306,6 +306,32 @@ execução. Nenhum push ou publicação é realizado.
 
 ### Recuperação do plan e do build
 
+Antes de encerrar o build, o Capivara2 confere uma entrega operacional: instalação
+sem runtimes herdados, compilação/tipagem declaradas e até dois smoke checks curtos
+dos comandos reais de início/importação. Isso não acrescenta uma suíte funcional
+global nem avaliação estética. Projetos npm com lock usam `npm ci` com scripts de
+instalação habilitados; `build` e `typecheck` existentes precisam passar. Não vale
+ocultar uma falha removendo dependências, scripts, strict ou ignorando erros.
+
+O runtime de conferência fica em um diretório temporário externo para que Node não
+encontre `node_modules` no projeto pai; Python sem ambiente declarado é conferido
+sem pacotes globais. Logs, comandos, resultados e checkpoints são registrados em
+`.harness/build/delivery`. Uma interrupção retoma os comandos já confirmados quando
+fonte, receita e ambiente continuam compatíveis, preservando todas as tasks prontas.
+
+O README recebe uma seção controlada com os pacotes/versões dos manifestos,
+pré-requisitos de sistema, comandos explícitos para instalação e manutenção e os
+procedimentos operacionais conferidos. Os comandos manuais acompanham o gerenciador
+de pacotes da plataforma analisada; quando necessário há também `install-manual.sh`.
+
+**Código concluído com instalação pendente:** se somente um pré-requisito externo
+não puder ser instalado automaticamente, o status principal é **Concluído — instalação
+pendente**, com `delivery_status=blocked` e `ready_to_run=false`. O relatório e o README
+explicam os pacotes faltantes. **Validar instalação** repete apenas a conferência
+pendente; não começa o projeto de novo. Isso não equivale a afirmar que a aplicação
+já está pronta para executar. Erros de código/configuração/tipagem continuam em
+correção automática e não recebem essa conclusão por pendência externa.
+
 O **build se recupera automaticamente durante a execução**, sem exigir um clique em
 Tentar novamente para erros recuperáveis do agente. Respostas JSON inválidas, citações
 que não correspondem à origem/ao código, falhas de comunicação do CLI e falhas recuperáveis

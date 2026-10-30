@@ -49,6 +49,11 @@ PLAN_STAGES = {
     "completed": (5, "Finalizando"),
 }
 BUILD_STAGES = {
+    "delivery_analysis":(4,"Levantando dependências da entrega"),
+    "delivery_install":(4,"Instalação limpa"), "delivery_compile":(4,"Compilação e tipagem"),
+    "delivery_startup":(4,"Inicialização operacional"), "delivery_diagnosis":(4,"Diagnosticando instalação"),
+    "delivery_repair":(4,"Corrigindo instalação"), "delivery_approved":(5,"Instalação aprovada"),
+    "delivery_pending":(5,"Concluído · instalação pendente"),
     "diagnosing":(4,"Diagnosticando repetição"), "verification_repair":(4,"Reparando verificação"),
     "verification_repaired":(4,"Verificação reparada"), "scope_recovery":(1,"Ajustando reserva"),
     "scope_recovered":(1,"Reserva ajustada"), "task_recovery":(2,"Recuperando task"),
@@ -320,8 +325,9 @@ class InitDashboard(VerticalScroll):
         if not self.query("#dash-stage"):
             return
         label, color = STATUS[self.run_status]
+        if self.module=='build' and self.run_status=='completed' and self.event.stage=='delivery_pending':label='concluído · instalação pendente'
         self.query_one("#dash-status", DashboardField).set_value(Text(f"● {label}", style=color))
-        stage_label = "Concluído" if self.run_status == "completed" else self.stages.get(self.event.stage, (0, self.event.stage))[1]
+        stage_label = "Instalação pendente" if self.module=='build' and self.event.stage=='delivery_pending' else "Concluído" if self.run_status == "completed" else self.stages.get(self.event.stage, (0, self.event.stage))[1]
         if self.module == "plan" and self.event.phase_number is not None and self.run_status != "completed":
             stage_label += f" · fase {self.event.phase_number}"
         self.query_one("#dash-stage", DashboardField).set_value(Text(f"▶ {stage_label}", style=CYAN))

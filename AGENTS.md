@@ -31,6 +31,22 @@
   task durante as correções e registrar evidências reais de execução.
 - Aplicação produzida pelo build fica na raiz selecionada, com README de
   instalação/execução. Estado, logs, checks e cópias temporárias ficam em .harness.
+- A prova de instalação usa runtime temporário fora da árvore do projeto para
+  impedir resolução de node_modules/venv ancestrais. Seu identificador, checkpoints,
+  logs e comprovantes persistentes continuam em .harness; não reutilizar runtimes
+  já preparados como evidência de instalação limpa.
+- Ao concluir as tasks, conferir instalação, build/tipagem declarados e smoke curto
+  de inicialização. Falhas do projeto são corrigidas automaticamente com revisão;
+  não remover dependências, scripts ou strict para esconder erros.
+- Se o código estiver concluído e SOMENTE a instalação de dependências externas
+  estiver pendente, marcar build.status=completed com delivery_status=blocked e
+  ready_to_run=false. A TUI mostra "Concluído — instalação pendente" e oferece
+  validar instalação sem refazer tasks. Não usar essa conclusão para erro de código,
+  configuração ou compilação ainda sem correção.
+- README deve listar pacotes e versões dos manifestos, pré-requisitos de sistema,
+  comandos explícitos de instalação/manual e os comandos operacionais conferidos.
+  Não declarar instalação aprovada sem resultados reais; preservar pendências e
+  scripts manuais quando a instalação automática não for possível.
 - O plan exige init aprovado e íntegro, preserva suas fases e divide cada fase
   em tasks pequenas. Cada chamada começa sem histórico; o escritor recebe só
   uma task. Tasks e fases exigem aprovação explícita; a conclusão certifica essas

@@ -10,7 +10,7 @@ import shutil
 
 from .artifacts import digest, atomic_write
 from .agents import AgentError
-from .build_artifacts import BuildError, BuildStore, DependenciesBlocked, load_plan
+from .build_artifacts import BuildError, BuildStore, DependenciesBlocked, DeliveryDependenciesPending, load_plan
 from .build_commands import run_command
 from .build_instructions import build_prompt
 from .build_models import (BuildBlueprint, EnvironmentSpec, FidelityReview, TaskScope,
@@ -96,7 +96,7 @@ class BuildEngine:
             schema['$defs']['FunctionalCheck']['properties']['requirement_quote']['enum']=list(dict.fromkeys(quotes))
         context_tree=await asyncio.to_thread(manifest,cwd)
         key=self.journal.key(role,operation,dict(data,source_tree=context_tree),schema)
-        cached=self.journal.cached(key,model) if operation not in ('write','verification') else None
+        cached=self.journal.cached(key,model) if operation not in ('write','verification','delivery_repair') else None
         if cached is not None:
             try:
                 if check:check(cached)
@@ -112,7 +112,7 @@ class BuildEngine:
             self.operations=self.journal.metrics().get('operations',0)
             request=dict(data,contract_error=feedback,rejected_response=rejected,recovery_attempt=attempt)
             snapshot=None
-            if operation in ('fidelity','verification','diagnose','review_verification_repair'):
+            if operation in ('fidelity','verification','diagnose','review_verification_repair','delivery_plan','delivery_diagnosis','delivery_repair_review'):
                 snapshot=self.store.path(f'control/audits/{call:04d}/source')
                 await asyncio.to_thread(copy_project,cwd,snapshot,runtimes=False)
                 await asyncio.to_thread(sync_tree,snapshot)
@@ -142,7 +142,7 @@ class BuildEngine:
                 feedback=f'A chamada anterior falhou: {provider_error}. Continue a operação preservando o trabalho existente.'
                 continue
             self.store.write(f'log/{role}-{call:04d}.response.txt',output)
-            if operation in ('fidelity','verification','diagnose','review_verification_repair') and await asyncio.to_thread(manifest,cwd)!=context_tree:
+            if operation in ('fidelity','verification','diagnose','review_verification_repair','delivery_plan','delivery_diagnosis','delivery_repair_review') and await asyncio.to_thread(manifest,cwd)!=context_tree:
                 gate='G2' if operation=='fidelity' else 'G3'
                 self.journal.abandon(key,f'{gate} alterou a fonte durante a auditoria.')
                 await asyncio.to_thread(restore_sources,cwd,snapshot,snapshot.parent/'changes')
@@ -167,7 +167,7 @@ class BuildEngine:
                 self.journal.failed(key,exc)
                 if self.progress:self.checkpoint()
                 task_id=data.get('task',{}).get('id')
-                if attempt%3==0 and operation in ('write','fidelity','verification') and task_id in self.progress:
+                if attempt%3==0 and operation in ('write','fidelity','verification','delivery_repair') and task_id in self.progress:
                     p=self.progress[task_id]
                     p.update(diagnosis_pending=True,failed_contract={'operation':operation,'error':feedback,'rejected_response':output[-6000:]})
                     self.checkpoint()
@@ -236,7 +236,7 @@ class BuildEngine:
         await self.ensure_dependencies(spec.dependencies,self.state.project_dir)
 
     async def ensure_dependencies(self,dependencies,cwd):
-        self.packages_total+=len(dependencies);missing=[];attempted=set()
+        self.packages_total+=len(dependencies);missing=[];attempted=set();verified=[]
         for index,dependency in enumerate(dependencies,1):
             prefix=f'log/dependency-{self.store.run_id}-{self.operations}-{index:03d}'
             result=await run_command(dependency.check,cwd,self.store,prefix+'-check')
@@ -249,7 +249,10 @@ class BuildEngine:
                     installed=await run_command(install,cwd,self.store,prefix+f'-install-{j}')
                     if installed['exit_code']!=0:break
                 result=await run_command(dependency.check,cwd,self.store,prefix+'-recheck')
-            if result['exit_code']==0:self.packages_ready+=1
+            if result['exit_code']==0:
+                self.packages_ready+=1
+                verified.append({'name':dependency.name,'check':dependency.check.model_dump(),
+                                 'stdout':result['stdout'][-4000:],'stderr':result['stderr'][-4000:]})
             else:missing.append({'dependency':dependency.model_dump(),'exit_code':result['exit_code'],
                                  'error':result['stderr'][-3000:]})
             self.emit()
@@ -280,6 +283,7 @@ class BuildEngine:
             recovery=f'Script disponível: {self.store.path("install-manual.sh")}. ' if commands else 'Não há instalador automático viável para estes pacotes. '
             raise DependenciesBlocked(f'Instale manualmente: {names}. {recovery}Instruções específicas: {self.store.path("manual-install.md")}. Depois execute build novamente.')
         self.announce('dependencies_ready','Dependências verificadas; preparação concluída.')
+        return verified
 
     async def prepare_tasks(self):
         for phase in self.source['plan']['phases']:
@@ -292,6 +296,8 @@ class BuildEngine:
             'content':{'title':'Documentação de instalação e execução','objective':'Fornecer README útil para instalar e executar a aplicação.',
                        'implementation_steps':['Documentar dependências, instalação e execução reais.','Incluir exemplos de configuração e uso aplicáveis, sem segredos.'],
                        'deliverables':['README.md e exemplos de variáveis necessários.']}}
+        repair=self.saved.get('delivery',{}).get('repair_task')
+        if repair:self.tasks['BUILD-INSTALLATION']=repair
         roles={}
         for item in self.source.get('classification',{}).get('activities',[]):
             for index,part in enumerate(item['parts'],1):
@@ -323,7 +329,7 @@ class BuildEngine:
             value=await self.invoke('reviewer','blueprint',{'plan':self.source['plan'],'product_requirements':{
                     f'R{i:03d}':text for i,text in enumerate(self.source['init']['document']['requirements'],1)}},BuildBlueprint,directory,validate)
         self.scopes={s.task_id:s for s in value.tasks}
-        self.scopes['BUILD-README']=TaskScope(task_id='BUILD-README',kind='documentation',writes=['README.md','.env.example'],reads=['**'],depends_on=list(set(self.tasks)-{'BUILD-README'}),
+        self.scopes['BUILD-README']=TaskScope(task_id='BUILD-README',kind='documentation',writes=['README.md','.env.example'],reads=['**'],depends_on=list(set(self.tasks)-{'BUILD-README','BUILD-INSTALLATION'}),
             requirement_ids=[f'R{i:03d}' for i in range(1,len(self.source['init']['document']['requirements'])+1)])
         if cached:
             previous_readme=next((s for s in cached['tasks'] if s['task_id']=='BUILD-README'),None)
@@ -339,7 +345,11 @@ class BuildEngine:
                 if recovered:
                     published,accepted=recovered
                     p.update(completed=True,stage='completed',gates=['completed']*4,published=published)
-                    self.write_approval(key,p)
+                    if key=='BUILD-INSTALLATION':
+                        self.store.json(f'tasks/{key}/approval.json',{'task_id':key,'gates':['completed']*4,
+                            'review':self.saved['delivery']['repair_review'],'published':published,'proof':'delivery/approval.json'})
+                        self.saved['delivery'].pop('repair_workspace',None)
+                    else:self.write_approval(key,p)
                     self.saved['accepted_tree']=accepted
                     self.store.json('state.json',self.saved)
         accepted=self.saved.get('accepted_tree',{})
@@ -651,7 +661,7 @@ class BuildEngine:
             'fidelity_review':p['fidelity_review']})
 
     async def schedule(self):
-        pending={key for key in self.tasks if not self.progress[key]['completed']}
+        pending={key for key in self.tasks if not self.progress[key]['completed'] and key!='BUILD-INSTALLATION'}
         running={};limit=self.state.max_agents if self.state.build_mode=='parallel' else 1
         limit=max(1,min(32,limit))
         order={key:index for index,key in enumerate(self.tasks)}
@@ -715,18 +725,37 @@ class BuildEngine:
             self.announce('scheduling','Organizando dependências, arquivos e execução das tasks.')
             await self.prepare_tasks()
             await self.schedule()
+            from .build_delivery import validate_delivery
+            delivery=await validate_delivery(self)
             if load_plan(self.state.project_dir)!=self.source:raise BuildError('O plan mudou durante o build; os arquivos da aplicação foram preservados.')
             readme=self.state.project_dir/'README.md'
             if not readme.is_file() or not readme.read_text(encoding='utf-8').strip():raise BuildError('README de instalação/execução não foi entregue.')
             self.store.write('report.md',f'# Build concluído\n\nProjeto: {self.state.project_dir}\n\n'
                 f'{len(self.tasks)} tasks aprovadas nos gates G0–G3.\n\n'
                 'As verificações são funcionais por task, sem julgamento estético ou suíte global.\n\n'
+                'Instalação limpa, compilação/tipagem e inicialização operacional aprovadas.\n'
+                'Evidências: build/delivery/approval.json.\n\n'
                 'Consulte o README.md da aplicação para instalação, configuração e execução.\n')
             self.announce('completed','Build concluído: aplicação e README entregues na raiz do projeto.')
             self.store.finish('completed',tasks=len(self.tasks),report='build/report.md',
+                              delivery='build/delivery/approval.json',delivery_source_key=delivery['source_key'],
+                              delivery_status='approved',ready_to_run=True,
                               files_sha256=digest(json.dumps(self.saved['accepted_tree'],sort_keys=True)))
             return self.store.path('report.md')
+        except DeliveryDependenciesPending as exc:
+            self.store.write('report.md','# Build concluído — instalação pendente\n\n'
+                'A geração e validação das tasks foram concluídas. A instalação operacional ainda não foi aprovada.\n\n'
+                +str(exc)+'\n\nConsulte no README a relação de pacotes e comandos. Revalidar a instalação preserva as tasks concluídas.\n')
+            self.announce('delivery_pending','Build concluído — instalação pendente. Consulte os pacotes e comandos no README.')
+            self.store.finish('completed',tasks=len(self.tasks),report='build/report.md',
+                delivery_status='blocked',ready_to_run=False,reason=str(exc),
+                recovery_script='build/install-manual.sh' if self.store.path('install-manual.sh').is_file() else None)
+            return self.store.path('report.md')
         except DependenciesBlocked as exc:
+            if self.store.started:
+                previous=self.store.path('report.md')
+                if previous.exists():self.store.write(f'control/reports/{self.store.run_id}.previous.md',previous.read_text())
+                self.store.write('report.md','# Build não concluído: dependências pendentes\n\n'+str(exc)+'\n')
             self.store.finish('blocked',reason=str(exc),recovery_script='build/install-manual.sh' if self.store.path('install-manual.sh').is_file() else None);raise
         except asyncio.CancelledError:
             self.store.finish('cancelled',reason='Build interrompido; tasks integradas foram preservadas para retomada.');raise
