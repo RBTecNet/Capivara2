@@ -7,6 +7,7 @@ from pydantic import Field, ConfigDict
 from .init_models import DocumentModel
 from .plan_contracts import TaskAssessment, CollectiveAssessment, StructureConcern
 from .plan_models import StructuralChange, TaskAddition
+from .plan_acceptance import change_conditions
 
 
 class TextEdit(DocumentModel):
@@ -45,6 +46,14 @@ class PhaseReviewResponse(DocumentModel):
 
 
 REVIEW_MODELS = (TaskAssessment, CollectiveAssessment)
+
+
+def stable_context(data):
+    """O formato do aceite não muda uma aprovação da mesma versão documental."""
+    result = deepcopy(data)
+    for contract in result.get('correction_contracts', []):
+        contract.pop('acceptance', None)
+    return result
 
 
 def wire_schema(model, data, requirements):
@@ -89,6 +98,10 @@ def compact_context(operation, data):
     tasks = task_map(result)
     if tasks and 'approved_versions' in result:
         result['approved_versions'] = {k: v for k, v in result['approved_versions'].items() if k in tasks}
+    for issue in result.get('scope_decisions', {}).get('issues', []):
+        issue['recent_evidence'] = [{'version':entry['version'], 'correction':{
+            k:v for k,v in entry['correction'].items() if k in ('category','reason','instruction')}}
+            for entry in issue.get('recent_evidence', [])]
     return result
 
 
@@ -116,13 +129,10 @@ def correction(finding, task, requirements, base_version):
     changes, acceptance = [], []
     for field in dict.fromkeys(e.field for e in finding.edits):
         before, after = task['content'][field], target[field]
-        old = '\n'.join(before) if isinstance(before, list) else before
-        new = '\n'.join(after) if isinstance(after, list) else after
         if before == after:
             raise ValueError('A edição não altera o documento.')
         changes.append({'field': field, 'before': before, 'after': after})
-        acceptance.append({'field': field, 'operator': 'contains' if new and new not in old else 'excludes',
-                           'value': new if new and new not in old else old})
+        acceptance.extend(change_conditions(field, before, after))
     evidence = []
     for identifier in finding.requirement_ids:
         if identifier not in requirements:

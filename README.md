@@ -205,6 +205,16 @@ fluxo estrutural. Findings sem edições podem explicar um `replan` ou uma opera
 estrutural já fornecida; não são tratados como patches ausentes. O replanejamento
 informa IDs de requisitos e recebe suas citações canônicas do controlador.
 
+Correções independentes podem afetar o mesmo campo e requisito. Os aceites registram
+os trechos corrigidos, sem congelar o campo inteiro. Uma proposta repetida ou contraditória
+volta ao revisor para diagnóstico; não encerra o plan nem reaplica a mesma correção.
+Propostas de correção rejeitadas também são refeitas antes de chegar ao escritor.
+
+Uma alteração estrutural atualiza referências a uma task retirada quando a cobertura
+aponta um único sucessor. Os contratos originais ficam no histórico e os documentos
+afetados voltam à revisão. Havendo vários sucessores, o harness preserva a ambiguidade
+para o revisor resolver, sem manter um literal de ID retirado como regra imutável.
+
 Cada chamada recebe apenas o recorte necessário: finalidade, restrições, requisitos e
 conteúdo da fase/task. O pedido integral e as versões aprovadas permanecem em disco,
 sem reenviar textos completos de outras fases ou cópias redundantes dos prompts.

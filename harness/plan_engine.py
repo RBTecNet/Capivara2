@@ -13,7 +13,7 @@ from .plan_corrections import CorrectionBook
 from .plan_schema import scoped_schema
 from .plan_contracts import (PlanContractError, WorkClassification, ClassificationReview,
     TaskAssessment, CollectiveAssessment, StructureRepair, ContentCorrection, ContractValidation,
-    SealedOutline, correction_id)
+    SealedOutline)
 from .plan_coverage import (build_requirements, check_assignments, check_seed,
                             coverage_map, delegate_validations)
 from .plan_instructions import instructions_for
@@ -21,7 +21,8 @@ from .plan_models import (FinalPlan, PlannedPhase, PlanRepair, PlanReview, TaskC
 from .run_events import InitEvent, PlanItem
 from .recovery import OperationJournal, fingerprint
 from .response_adapter import decode_response, contract_feedback
-from .plan_adapter import REVIEW_MODELS, wire_schema, normalize_review, compact_context
+from .plan_adapter import REVIEW_MODELS, wire_schema, normalize_review, compact_context, stable_context
+from .plan_references import successors, rebind_tasks, referencing_tasks, rewrite
 
 
 class PlanEngine:
@@ -57,6 +58,7 @@ class PlanEngine:
         self.journal=None
         self.legacy_responses={}
         self.last_operation_key=None
+        self.compatible_operations={}
 
     def item_state(self, item_id, **states):
         self.item_states.setdefault(item_id, {}).update(states)
@@ -116,10 +118,26 @@ class PlanEngine:
         key=self.journal.key(role,task,data,schema)
         self.last_operation_key=key
         record=self.journal.read(key)
-        value=self.journal.cached(key,model)
-        if value is not None:
-            if check:check(value)
-            return value
+        try:
+            value=self.journal.cached(key,model)
+            if value is not None:
+                if check:check(value)
+                return value
+        except (ValueError, PlanContractError) as exc:
+            feedback=contract_feedback(exc)
+            self.journal.abandon(key,feedback)
+            record=self.journal.read(key)
+        stable_key=fingerprint((role,task,stable_context(data)))
+        for previous in self.compatible_operations.get(stable_key, []):
+            try:
+                candidate=self.journal.cached(previous,model)
+                if candidate is None:continue
+                if check:check(candidate)
+            except (ValueError, PlanContractError):continue
+            self.journal.start(key,role=role,operation=task,data=data)
+            self.journal.finish(key,candidate,recovered_from=previous)
+            self.operations=self.journal.metrics().get('operations',0)
+            return candidate
         if not record:
             legacy_key=fingerprint((role,task,data))
             for path in self.legacy_responses.get(legacy_key,[]):
@@ -128,7 +146,7 @@ class PlanEngine:
                     if isinstance(candidate,ContractValidation) and not candidate.approved:continue
                     if isinstance(candidate,ClassificationReview) and candidate.status=='conflict':continue
                     if check:check(candidate)
-                except ValueError:continue
+                except (ValueError, PlanContractError):continue
                 self.journal.start(key,role=role,operation=task,data=data)
                 self.operations=self.journal.metrics().get('operations',0)
                 self.journal.finish(key,candidate)
@@ -144,7 +162,7 @@ class PlanEngine:
                         and (not isinstance(candidate,ClassificationReview) or candidate.status!='conflict')):
                     self.journal.finish(key,candidate)
                     return candidate
-            except ValueError as exc:feedback=contract_feedback(exc)
+            except (ValueError, PlanContractError) as exc:feedback=contract_feedback(exc)
         feedback=feedback or contract_feedback(record.get('error',''))
         attempt = provider_failures = 0
         while max_attempts is None or attempt < max_attempts:
@@ -199,9 +217,7 @@ class PlanEngine:
                 if recovery.get('operation') == task and recovery.get('status') == 'retrying':
                     self.store.json('control/response-recovery.json', {**recovery, 'status': 'completed', 'resolved_call': self.call_id})
                 return value
-            except PlanContractError:
-                raise
-            except ValueError as exc:
+            except (ValueError, PlanContractError) as exc:
                 feedback = contract_feedback(exc)
                 self.journal.failed(key,feedback)
                 rejected_response = output
@@ -379,18 +395,28 @@ class PlanEngine:
         spec = ContentCorrection.model_validate(correction.contract)
         target = self.correction_book.check(task, spec, self.requirements)
         context = self.task_context(phase, task)
-        for cycle in range(2):
+        transaction_path=f"control/applied-corrections/{self.correction_book.identifier(spec)}.json"
+        transaction=self.store.read_json(transaction_path)
+        # O recibo issued só é gravado após aprovação explícita do contrato.
+        confirmed = bool(transaction and transaction.get('status') in ('issued', 'applied')
+                         and transaction.get('base_version') == version(task)
+                         and transaction.get('target') == target.model_dump())
+        cycle = 0
+        while not confirmed:
             validation = await self.call("reviewer", "validate_correction", {**context,
-                "task": task.model_dump(), "contract": spec.model_dump(), "expected_content": target.model_dump()}, ContractValidation)
+                "task": task.model_dump(), "contract": spec.model_dump(), "expected_content": target.model_dump(),
+                **({'review_cycle':cycle} if cycle else {})}, ContractValidation)
             if validation.approved:
                 break
-            if cycle:
-                raise PlanContractError(f"{task.id}: o revisor não produziu um contrato de correção coerente. {validation.reason}")
+            cycle += 1
+            self.announce('contract_recovery', f'{task.id}: revisor ajustando a proposta antes de enviar ao escritor.')
+            await asyncio.sleep(min(.25 * 2 ** min(cycle-1,6),15))
             spec = await self.call("reviewer", "repair_correction", {**context, "task": task.model_dump(),
-                "rejected_contract": spec.model_dump(), "reason": validation.reason}, ContentCorrection,
+                "rejected_contract": spec.model_dump(), "reason": validation.reason,
+                **({'review_cycle':cycle} if cycle > 1 else {})}, ContentCorrection,
                 lambda c: self.correction_book.check(task, c, self.requirements))
             target = self.correction_book.check(task, spec, self.requirements)
-        transaction_path=f"control/applied-corrections/{correction_id(spec)}.json"
+        transaction_path=f"control/applied-corrections/{self.correction_book.identifier(spec)}.json"
         transaction=self.store.read_json(transaction_path)
         identifier,target=self.correction_book.issue(task,spec,self.requirements)
         if transaction and transaction.get('base_version')==version(task):
@@ -474,6 +500,21 @@ class PlanEngine:
                     raise PlanContractError(f"Fase {phase.number}: a estrutura proposta repete uma versão já examinada; não haverá novo ciclo de divisão/consolidação.")
             self.applied_structures.update(structure_version(p) for p in result if p.number in affected)
         retired = {task.id: task.model_dump() for phase in self.phases for task in phase.tasks if task.id in removed}
+        bindings = successors(self.phases, result, removed)
+        mentioned = referencing_tasks(result, removed)
+        rebound = rebind_tasks(result, bindings)
+        dirty.update(rebound | mentioned)
+        affected.update(p.number for p in result if any(t.id in dirty for t in p.tasks))
+        for phase in result:
+            for task in phase.tasks:
+                spec = feedback.get(task.id, {}).get('contract')
+                if spec and task.id in rebound:
+                    spec['base_version'] = version(task)
+                    for change in spec['changes']:
+                        change['before'] = rewrite(change['before'], bindings)
+                        change['after'] = rewrite(change['after'], bindings)
+                    for condition in spec['acceptance']:
+                        condition['value'] = rewrite(condition['value'], bindings)
         # O lote inteiro já foi validado; nenhuma chamada ao escritor ocorreu até aqui.
         self.phases, self.task_sequences = result, sequences
         self.requirements = requirements
@@ -483,6 +524,7 @@ class PlanEngine:
         self.approved_tasks.difference_update(dirty | removed)
         self.created_tasks.difference_update(removed)
         self.correction_book.retire(removed)
+        self.correction_book.rebind(bindings, removed)
         for identifier in dirty | removed:
             self.approved_versions.pop(identifier, None)
         for identifier, document in retired.items():
@@ -498,6 +540,12 @@ class PlanEngine:
             self.item_state(f"P{number}", validation="rejected")
         self.repair_id += 1
         self.store.json(f"control/repairs/{self.repair_id:04d}.json", verdict.model_dump())
+        if bindings:
+            self.store.json(f"control/reference-bindings/{self.repair_id:04d}.json", {'bindings':bindings,'changed_tasks':sorted(rebound)})
+            for phase in self.phases:
+                for task in phase.tasks:
+                    if task.id in rebound:
+                        self.store.json(f"phases/{phase.number:02d}/tasks/{task.id}.json", task.model_dump())
         self.checkpoint()
         return affected
 
@@ -561,6 +609,11 @@ class PlanEngine:
 
     def prepare_recovery(self):
         self.journal=OperationJournal(self.store,self.source['source_prompt_sha256'])
+        for path in self.store.path('control/operations').glob('*.json'):
+            record=self.store.read_json(str(path.relative_to(self.store.root)), {})
+            if record.get('status')=='completed' and record.get('namespace')==self.journal.namespace:
+                stable_key=fingerprint((record['role'],record['operation'],stable_context(record['data'])))
+                self.compatible_operations.setdefault(stable_key,[]).append(record['key'])
         metrics=self.journal.metrics()
         self.operations=metrics.get('operations',0);self.contract_errors=metrics.get('contract_errors',0);self.corrections=metrics.get('corrections',0)
         contexts=sorted(self.store.path('context').glob('call-*.json'),reverse=True)

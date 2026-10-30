@@ -82,7 +82,14 @@ class PlanRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_rejected_contract_can_be_replaced_on_retry_without_rewriting_draft(self):
         agents=PlanAgents();agents.task_reviews=[rejected('P0-T001')]
         agents.contract_reviews=[{'approved':False,'reason':'Contrato contradiz a origem.'}]*2
-        with self.assertRaises(PlanContractError):await PlanEngine(self.state,agents).run()
+        validations=0
+        def interrupt(operation,store):
+            nonlocal validations
+            if operation=='validate_correction':
+                validations+=1
+                if validations==3:raise asyncio.CancelledError()
+        agents.on_generate=interrupt
+        with self.assertRaises(asyncio.CancelledError):await PlanEngine(self.state,agents).run()
         agents=PlanAgents();await PlanEngine(self.state,agents).run()
         self.assertFalse(any(e['current_request']['task']=='write_task' and e['current_request']['data']['task_id']=='P0-T001' for _,e in agents.calls))
         self.assertEqual(read_status(self.root)['modules']['plan']['status'],'completed')

@@ -78,7 +78,9 @@
   ser separadas sem omitir texto. Revisões posteriores não mudam os responsáveis.
 - Devoluções exigem versão, evidência, alterações exatas e aceite verificável. Cada
   conflito tem uma aplicação pelo escritor; não reenviar o mesmo erro nem contrariar
-  aceites vigentes. Reincidência/contradição é falha diagnosticada de contrato, sem
+  trechos já corrigidos. Novos defeitos no mesmo campo/requisito são permitidos.
+  Aceites protegem as alterações necessárias, sem congelar campos inteiros.
+  Reincidência/contradição volta ao revisor para diagnóstico, sem
   aprovação por insistência. Erros de formato são recuperados na mesma operação,
   sem descartar aprovações, com espera cancelável e sem limite fixo de tentativas.
 - A camada comum adapta JSON simples, blocos Markdown, envelopes e respostas nativas
@@ -94,6 +96,9 @@
   consolidação e alteração de seeds seguem replanejamento. Findings que explicam
   uma ação estrutural não são patches adicionais. O controlador resolve citações
   de replanejamento pelos IDs canônicos, sem exigir cópias manuais ao modelo.
+- Mudanças estruturais atualizam referências a IDs quando há sucessor inequívoco,
+  preservando contratos históricos. Se há ambiguidade, não adivinhar o sucessor:
+  revisar os documentos afetados. Literais de IDs retirados não congelam aceites.
 - Preservar campos não alterados, decisões vigentes e aprovações por versão.
   Reavaliar estrutura apenas com operações concretas ou decisão específica,
   mantendo chamadas sem histórico e sem aprovação automática por tentativas.

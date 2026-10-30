@@ -140,18 +140,17 @@ class PlanRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(d['task_id']=='P1-T002' for d in writes), 1)
         self.assertFalse(any(d['correction'] and 'remov' in d['correction']['instruction'].lower() for d in writes))
 
-    async def test_repeated_rejection_is_a_contract_failure_not_another_writer_attempt(self):
+    async def test_repeated_rejection_returns_to_reviewer_without_another_writer_attempt(self):
         agents = PlanAgents()
         agents.task_reviews = [rejected('P0-T001', 'Preservar somente o recorte atribuído.')] * 2
         engine = PlanEngine(self.state, agents)
-        with self.assertRaisesRegex(PlanContractError, 'mesmo conflito'):
-            await engine.run()
+        await engine.run()
         operations = [e['current_request']['task'] for _,e in agents.calls]
         self.assertEqual(operations.count('correct_task'), 1)
         self.assertNotIn('reassess_phase', operations)
-        self.assertEqual(read_status(self.root)['modules']['plan']['status'], 'failed')
-        self.assertFalse((self.root/'.harness/plan/final.md').exists())
-        self.assertTrue((self.root/'.harness/plan/control/contract-failure.json').exists())
+        self.assertEqual(read_status(self.root)['modules']['plan']['status'], 'completed')
+        self.assertTrue((self.root/'.harness/plan/final.md').exists())
+        self.assertGreater(engine.contract_errors,0)
 
     async def test_reassessment_does_not_mark_tasks_approved_when_next_review_is_cancelled(self):
         agents = PlanAgents()

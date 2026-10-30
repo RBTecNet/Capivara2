@@ -123,17 +123,17 @@ class CorrectionContractTests(unittest.IsolatedAsyncioTestCase):
         content=json.loads(final.with_suffix('.json').read_text())['phases'][0]['tasks'][0]['content']
         self.assertEqual(content,records[0]['expected_content'])
 
-    async def test_semantically_invalid_contract_is_repaired_once_before_writer_then_fails_closed(self):
+    async def test_semantically_invalid_proposals_are_repaired_before_writer_without_stopping(self):
         agents=PlanAgents()
         agents.task_reviews=[rejected('P0-T001')]
         agents.contract_reviews=[{'approved':False,'reason':'Correção contradiz o escopo aprovado.'}]*2
         engine=PlanEngine(self.state,agents)
-        with self.assertRaisesRegex(PlanContractError,'contrato de correção coerente'):
+        with patch('harness.plan_engine.asyncio.sleep',new=AsyncMock()):
             await engine.run()
         operations=[e['current_request']['task'] for _,e in agents.calls]
-        self.assertEqual(operations.count('repair_correction'),1)
-        self.assertNotIn('correct_task',operations)
-        self.assertFalse((self.root/'.harness/plan/final.md').exists())
+        self.assertEqual(operations.count('repair_correction'),2)
+        self.assertEqual(operations.count('correct_task'),1)
+        self.assertTrue((self.root/'.harness/plan/final.md').exists())
 
     async def test_schemas_only_expose_actions_allowed_for_the_role(self):
         task_schema=agent_schema(TaskAssessment)

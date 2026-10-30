@@ -114,8 +114,8 @@ Não escreva outra revisão geral nem amplie o objetivo da task.
 Corrija o contrato rejeitado, não a task. Mantenha task_id e base_version atuais,
 forneça evidências literais, substituições before/after completas e condições contains/excludes
 concretas, ainda falsas no conteúdo atual e verdadeiras após a mudança. Resolva a contradição
-explicitada sem violar contratos anteriores nem classificação. Esta é a única revisão
-semântica deste contrato; não o devolva vago para o escritor tentar adivinhar.
+explicitada sem violar os trechos já corrigidos nem a classificação. Reavalie a causa
+se a proposta anterior foi rejeitada; não devolva instruções vagas ao escritor.
 """,
 }
 
