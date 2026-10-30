@@ -126,13 +126,27 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse((root/'dobro.py').exists())
             self.assertFalse(any(op=='write' for _,op,_ in agents.calls))
 
-    async def test_scope_violation_never_publishes_candidate_changes(self):
-        agents=Builders();agents.outside=True
-        with self.assertRaisesRegex(BuildError,'fora da reserva'):
-            await BuildEngine(self.state,agents).run()
+    async def test_scope_expansion_still_requires_fidelity_and_does_not_publish_extra_feature(self):
+        class ScopeFix(Builders):
+            async def generate(self,*args,**kwargs):
+                result=await super().generate(*args,**kwargs)
+                _,op,data=self.calls[-1]
+                path=Path(kwargs['cwd'])
+                if op=='fidelity' and data['task']['id']=='P1-T001' and (path/'unexpected.py').exists():
+                    return json.dumps({'approved':False,'summary':'Funcionalidade fora da task.', 'issues':[{
+                        'file':'unexpected.py','observed':'Arquivo fora da unidade solicitada.',
+                        'required_change':'Remover unexpected.py e preservar a função dobrar.',
+                        'acceptance':'Somente a unidade solicitada é implementada.',
+                        'requirement_quote':data['task']['content']['objective'],'evidence_quote':'x=1','missing':False}]})
+                if op=='write' and data['task']['id']=='P1-T001' and data['feedback']:
+                    (path/'unexpected.py').unlink(missing_ok=True)
+                return result
+        agents=ScopeFix();agents.outside=True
+        engine=BuildEngine(self.state,agents);await engine.run()
         self.assertFalse((self.root/'unexpected.py').exists())
-        self.assertFalse((self.root/'dobro.py').exists())
-        self.assertEqual(read_status(self.root)['modules']['build']['status'],'failed')
+        self.assertTrue((self.root/'dobro.py').exists())
+        self.assertTrue(engine.progress['P1-T001']['force_serial'])
+        self.assertEqual(read_status(self.root)['modules']['build']['status'],'completed')
 
     async def test_resume_skips_completed_tasks_and_external_changes_invalidate_scope(self):
         await BuildEngine(self.state,Builders()).run()
@@ -254,28 +268,27 @@ class BuildGateIntegrityTests(unittest.IsolatedAsyncioTestCase):
             async def generate(self,*args,**kwargs):
                 response=await super().generate(*args,**kwargs)
                 _,op,data=self.calls[-1]
-                if op=='write' and data['task']['id']=='P1-T001' and data['feedback']:
+                if op=='write' and data['task']['id']=='P1-T001' and data['feedback'] and len([d for _,o,d in self.calls if o=='write' and d['task']['id']=='P1-T001'])<3:
                     path=Path(kwargs['cwd'])
                     (path/'dobro.py').write_text('def dobrar(n):\n    return 0\n# mudou, mas continua errado\n')
                     (path/'.harness/checks/check.py').write_text('assert True\n')
                 return response
         agents=Tamper();agents.g3_bad=True
-        with self.assertRaisesRegex(BuildError,'mesmo conflito'):
-            await BuildEngine(self.state,agents).run()
-        self.assertFalse((self.root/'dobro.py').exists())
+        await BuildEngine(self.state,agents).run()
+        self.assertIn('n * 2',(self.root/'dobro.py').read_text())
+        results=[json.loads(p.read_text())['exit_code'] for p in (self.root/'.harness/build/log').glob('*P1-T001-g3*.result.json')]
+        self.assertEqual(results.count(1),2)
+        self.assertEqual(results.count(0),1)
 
     async def test_validator_cannot_change_application_source(self):
         class Mutator(Builders):
             async def generate(self,*args,**kwargs):
                 response=await super().generate(*args,**kwargs)
                 _,op,data=self.calls[-1]
-                if op=='fidelity' and data['task']['id']=='P1-T001':
+                if op=='fidelity' and data['task']['id']=='P1-T001' and len([d for _,o,d in self.calls if o=='fidelity' and d['task']['id']=='P1-T001'])==1:
                     (Path(kwargs['cwd'])/'dobro.py').write_text('def dobrar(n):\n    return 2\n')
                 return response
-        with self.assertRaisesRegex(BuildError,'G2 alterou a fonte'):
-            await BuildEngine(self.state,Mutator()).run()
-        self.assertFalse((self.root/'dobro.py').exists())
-        agents=Builders();await BuildEngine(self.state,agents).run()
+        agents=Mutator();await BuildEngine(self.state,agents).run()
         self.assertTrue(any(op=='fidelity' and data['task']['id']=='P1-T001' for _,op,data in agents.calls))
         self.assertIn('n * 2',(self.root/'dobro.py').read_text())
 

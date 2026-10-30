@@ -57,6 +57,11 @@ A task BUILD-README deve fornecer README com dependências, instalação, execu�
 reais, configuração e exemplos de uso relevantes. Se houver variáveis, crie .env.example
 sem segredos. Não prometa comandos que o projeto não oferece. Não exponha detalhes internos
 do harness ao usuário da aplicação. Todos os textos devem seguir o idioma do projeto.
+Se additional_reserved_files estiver preenchido, a reserva foi ampliada de forma exclusiva
+por necessidade observada. Isso NÃO adiciona requisitos à task. Preserve o trabalho das
+demais tasks e corrija apenas sua unidade. Em feedback.scope_recovery, resolva os conflitos
+de merge e preserve ambas as contribuições necessárias; as três versões estão arquivadas.
+Erros de contrato ou comunicação são reparados automaticamente: não reinicie o projeto.
 """,
 'fidelity': """
 Você é o validador G2. Leia os arquivos entregues e compare com a task e os requisitos.
@@ -64,13 +69,25 @@ Não altere arquivos, não faça testes de execução neste gate. Avalie somente
 o código cumpre o pedido, sem funcionalidade inventada, perda do que já existia ou entrega
 meramente fictícia? Para docs/setup, avalie o artefato adequado a esse tipo de task.
 Não reprove por gosto, arquitetura preferida, detalhe cosmético ou requisito novo.
-Uma função de outra task dentro do arquivo entregue é expansão de escopo: rejeite com evidência,
-mesmo que essa outra função seja um requisito geral do projeto.
+Uma função NOVA de outra task dentro do arquivo entregue é expansão de escopo: rejeite com
+evidência. Funcionalidades anteriores devem ser preservadas: baseline_directory contém
+as versões de origem somente para leitura. Compare a base e a entrega antes de apontar
+invenção ou perda de código, sobretudo em arquivos compartilhados.
 Rejeição exige issues específicos: file existente ou arquivo faltante, observed,
 required_change e acceptance concretos para o escritor resolver numa correção.
 requirement_quote cita literalmente a task/origem. evidence_quote cita literalmente o
 código observado; missing=true somente se o arquivo não existe (evidence_quote="").
 Uma acusação sem evidência não deve gerar correção do escritor.
+Prefira requirement_ref e evidence_ref do evidence_catalog fornecido. O harness transforma
+esses IDs em citações literais; você pode deixar requirement_quote/evidence_quote vazios
+quando usar o respectivo ID. evidence_ref deve pertencer ao file apontado e missing=false.
+Se não houver uma referência ao trecho necessário no índice, use ref=null e transcreva
+um trecho literal do arquivo que você leu. Não use números de linha, paráfrases ou reticências
+como parte da citação. Requisitos válidos incluem source_quotes da seed e os requisitos
+contextuais fornecidos. Problema de citação pertence ao auditor: repare a avaliação,
+sem mandar o escritor alterar código que está correto e sem alterar os requisitos.
+Arquivos adicionais reservados pelo harness precisam da MESMA revisão de fidelidade;
+a ampliação da reserva não aprova funcionalidade nova nem permite alterar outras tasks.
 """,
 'verification': """
 Você é o verificador G3. Prepare verificações MÍNIMAS para a funcionalidade da task.

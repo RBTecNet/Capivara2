@@ -20,7 +20,7 @@ RUNTIMES = ('node_modules','.venv','venv')
 
 def relative_path(value, *, pattern=False):
     path=PurePosixPath(value)
-    if (not value or path.is_absolute() or '\\' in value or '\0' in value or '~' in value
+    if (not value or not path.parts or path.is_absolute() or '\\' in value or '\0' in value or '~' in value
             or '..' in path.parts or path.parts[0] in ('.harness','.git')
             or (not pattern and any(c in value for c in '*?['))):
         raise BuildError(f'Caminho fora do escopo do projeto: {value!r}.')
@@ -100,6 +100,26 @@ def copy_project(root,destination, *, runtimes=True):
     return snapshot
 
 
+def restore_sources(root,snapshot,archive):
+    """Guardar violações do auditor e restaurar exatamente a fonte que ele recebeu."""
+    before=manifest(snapshot);after=manifest(root)
+    for name in diff(before,after):
+        target=root/name
+        if target.is_file():
+            saved=archive/name;saved.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copy2(target,saved)
+        if name in before:
+            target.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copy2(snapshot/name,target)
+        else:target.unlink(missing_ok=True)
+
+
+def sync_tree(root):
+    for name in manifest(root):
+        with (root/name).open('rb') as stream:os.fsync(stream.fileno())
+        sync_parents((root/name).parent,root)
+
+
 class Workspace:
     def __init__(self,project,store,task_id):
         self.project=project
@@ -107,6 +127,7 @@ class Workspace:
         self.base_root=copy_project(project,self.root)
         self.base=manifest(self.root)
         (self.root/'.harness/checks').mkdir(parents=True,mode=0o700)
+        copy_project(self.root,self.root/'.harness/baseline',runtimes=False)
         self.frozen_checks={}
         self.save()
 
@@ -130,9 +151,7 @@ class Workspace:
         return workspace
 
     def sync_sources(self):
-        for name in manifest(self.root):
-            with (self.root/name).open('rb') as stream:os.fsync(stream.fileno())
-            sync_parents((self.root/name).parent,self.root)
+        sync_tree(self.root)
         self.save()
 
     def changes(self):
@@ -153,6 +172,46 @@ class Workspace:
             if path.is_symlink(): raise BuildError('Checks não podem conter links simbólicos.')
             if path.is_file(): self.frozen_checks[path.relative_to(self.root).as_posix()]=path.read_bytes()
         self.save()
+
+    def rebase(self):
+        """Preservar o rascunho e integrar a base atual antes de ampliar a reserva."""
+        current=manifest(self.project);candidate=manifest(self.root)
+        touched=diff(self.base_root,current)
+        history=self.root/'.harness/rebase'/uuid4().hex
+        baseline=self.root/'.harness/baseline'
+        for name in touched:
+            target=self.root/name;source=self.project/name
+            if candidate.get(name) not in (self.base.get(name),current.get(name)):
+                record=history/name;record.mkdir(parents=True,exist_ok=True)
+                if target.is_file():shutil.copy2(target,record/'candidate')
+                if source.is_file():shutil.copy2(source,record/'current')
+                original=baseline/name
+                if original.is_file():shutil.copy2(original,record/'base')
+                elif name not in self.base_root:(record/'base').write_bytes(b'')
+                merged=None
+                if all((record/part).is_file() for part in ('base','current','candidate')) and shutil.which('git'):
+                    try:
+                        result=subprocess.run(['git','merge-file','--diff3','-p',str(record/'current'),str(record/'base'),str(record/'candidate')],
+                            capture_output=True,timeout=10)
+                        if result.returncode in (0,1):merged=result.stdout
+                    except (OSError,subprocess.TimeoutExpired):pass
+                if merged is None:
+                    ours=source.read_bytes() if source.is_file() else b''
+                    theirs=target.read_bytes() if target.is_file() else b''
+                    merged=b'<<<<<<< integrado\n'+ours+b'\n=======\n'+theirs+b'\n>>>>>>> task\n'
+                target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(merged)
+            elif name in current:
+                target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
+            else:target.unlink(missing_ok=True)
+            original=baseline/name
+            if name in current:
+                original.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,original)
+                self.base[name]=current[name]
+            else:
+                original.unlink(missing_ok=True);self.base.pop(name,None)
+        self.base_root=current
+        self.save()
+        return touched
 
     def restore_checks(self):
         directory=self.root/'.harness/checks'

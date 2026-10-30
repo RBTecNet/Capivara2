@@ -306,11 +306,36 @@ execução. Nenhum push ou publicação é realizado.
 
 ### Recuperação do plan e do build
 
+O **build se recupera automaticamente durante a execução**, sem exigir um clique em
+Tentar novamente para erros recuperáveis do agente. Respostas JSON inválidas, citações
+que não correspondem à origem/ao código, falhas de comunicação do CLI e falhas recuperáveis
+da task são devolvidas com diagnóstico para correção, com espera progressiva e cancelável.
+Não há encerramento após uma quantidade fixa de tentativas. Cada retorno precisa passar
+pelos mesmos gates; repetir uma falha nunca equivale a aprovar a entrega.
+
+O auditor recebe um catálogo de referências aos requisitos e trechos reais dos arquivos.
+Ao citar esses IDs, o harness preenche as citações literais, evitando erros de transcrição.
+Uma avaliação inválida é corrigida pelo auditor e não vira uma ordem de refazer código
+correto. Se o auditor editar a fonte, a versão recebida é restaurada, a alteração fica
+arquivada e a avaliação é refeita. Auditorias interrompidas também são recuperadas.
+
+Quando uma task escreve um arquivo adicional, como `src/app.css` ou `package-lock.json`,
+o scheduler aguarda os outros workers terminarem e reserva os caminhos exatos para execução
+exclusiva. As versões de base, integradas e candidatas são preservadas; alterações concorrentes
+são conciliadas e conflitos voltam ao escritor. Todos os arquivos adicionais aparecem para
+o G2: ampliar a reserva não autoriza funcionalidades novas nem dispensa os gates G1–G3.
+As tarefas já concluídas são preservadas. Bloqueios reais de instalação continuam fornecendo
+instruções para intervenção manual, conforme a etapa de dependências.
+
 **Tentar novamente** e abrir o mesmo módulo em uma nova execução retomam o trabalho
 salvo. Isso também vale após cancelamento, falha do CLI, encerramento do processo
 ou queda de energia. Uma falha inesperada da execução aparece no dashboard e mantém
 o botão de recuperação disponível. O init continua sendo a exceção: executá-lo
 novamente reinicializa os artefatos, conforme seu fluxo original.
+
+Após atualizar a instalação, reabra `capivara2` no mesmo projeto e selecione `build`
+para carregar o código atualizado e retomar o checkpoint. Um processo que já estava
+aberto continua usando os módulos Python carregados no início da sua execução.
 
 No plan, recibos em `plan/control/operations` preservam as respostas validadas.
 O controlador reconstrói o estado localmente, sem chamar novamente os agentes para

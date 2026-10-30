@@ -8,16 +8,22 @@ import platform
 import shlex
 import shutil
 
-from .artifacts import digest
+from .artifacts import digest, atomic_write
+from .agents import AgentError
 from .build_artifacts import BuildError, BuildStore, DependenciesBlocked, load_plan
 from .build_commands import run_command
 from .build_instructions import build_prompt
 from .build_models import (BuildBlueprint, EnvironmentSpec, FidelityReview, TaskScope,
                            VerificationSpec, WriterResult)
-from .build_workspace import Workspace, conflicts, diff, manifest, matches, relative_path
+from .build_workspace import Workspace, conflicts, diff, manifest, matches, relative_path, copy_project, restore_sources, sync_tree
 from .plan_models import agent_schema
 from .run_events import BuildItem, InitEvent
 from .recovery import OperationJournal
+from .build_review import evidence_catalog, fidelity_schema, requirement_quotes, resolve_references
+
+
+class ScopeExpansionPending(Exception):
+    """A task volta à fila para reservar arquivos adicionais em execução exclusiva."""
 
 
 class BuildEngine:
@@ -78,6 +84,9 @@ class BuildEngine:
     async def invoke(self,role,operation,data,model,cwd,check=None):
         feedback='';rejected=None
         schema=agent_schema(model)
+        if operation=='fidelity':
+            data=dict(data,evidence_catalog=evidence_catalog(data,cwd))
+            schema=fidelity_schema(schema,data['evidence_catalog'])
         if operation=='verification' and data.get('delivered_files'):
             task=data['task']
             quotes=[task['seed']['scope'],task['content']['objective'],*task['content']['implementation_steps'],
@@ -94,34 +103,117 @@ class BuildEngine:
             except ValueError as exc:
                 self.journal.abandon(key,str(exc))
                 feedback=str(exc)
-        for attempt in range(2):
+        attempt=self.journal.read(key).get('attempt',0)
+        while True:
+            attempt+=1
             self.call_id=self.journal.next_call();call=self.call_id
-            self.journal.start(key,role=role,operation=operation,data=data)
+            self.journal.start(key,role=role,operation=operation,data=data,attempt=attempt)
             self.operations=self.journal.metrics().get('operations',0)
-            request=dict(data,contract_error=feedback,rejected_response=rejected)
+            request=dict(data,contract_error=feedback,rejected_response=rejected,recovery_attempt=attempt)
+            snapshot=None
+            if operation in ('fidelity','verification'):
+                snapshot=self.store.path(f'control/audits/{call:04d}/source')
+                await asyncio.to_thread(copy_project,cwd,snapshot,runtimes=False)
+                await asyncio.to_thread(sync_tree,snapshot)
+                atomic_write(snapshot.parent/'audit.json',json.dumps({'status':'running','workspace':str(cwd)}))
+            provider_error=None
             self.active[call]=role;self.last_role=role;self.emit('agent_started')
             try:
                 output=await self.agents.generate(self.state.reviewer if role=='reviewer' else self.state.writer,
                     role,build_prompt(operation,request,schema),schema,self.store,call,cwd=cwd,allow_tools=True)
+            except AgentError as exc:
+                provider_error=exc
+            except asyncio.CancelledError:
+                if snapshot:
+                    await asyncio.to_thread(restore_sources,cwd,snapshot,snapshot.parent/'changes')
+                    await asyncio.to_thread(sync_tree,cwd)
+                    self.close_audit(snapshot)
+                raise
             finally:
                 self.active.pop(call,None);self.emit('agent_finished')
+            if provider_error:
+                if snapshot:
+                    await asyncio.to_thread(restore_sources,cwd,snapshot,snapshot.parent/'changes')
+                    await asyncio.to_thread(sync_tree,cwd)
+                    self.close_audit(snapshot)
+                self.journal.failed(key,provider_error)
+                await self.recover('agent_recovery',str(provider_error),attempt,data.get('task',{}).get('id'))
+                feedback=f'A chamada anterior falhou: {provider_error}. Continue a operação preservando o trabalho existente.'
+                continue
             self.store.write(f'log/{role}-{call:04d}.response.txt',output)
             if operation in ('fidelity','verification') and await asyncio.to_thread(manifest,cwd)!=context_tree:
                 gate='G2' if operation=='fidelity' else 'G3'
                 self.journal.abandon(key,f'{gate} alterou a fonte durante a auditoria.')
-                raise BuildError(f'{gate} alterou a fonte da aplicação; resposta descartada e cópia preservada.')
+                await asyncio.to_thread(restore_sources,cwd,snapshot,snapshot.parent/'changes')
+                await asyncio.to_thread(sync_tree,cwd)
+                self.close_audit(snapshot)
+                feedback=f'{gate} alterou a fonte da aplicação. O harness restaurou a fonte: apenas audite, sem editar código.'
+                rejected=output
+                await self.recover('auditor_recovery',feedback,attempt,data.get('task',{}).get('id'))
+                continue
+            if snapshot:self.close_audit(snapshot)
             try:
                 text=output.strip()
                 if text.startswith('```') and text.endswith('```'):text='\n'.join(text.splitlines()[1:-1])
-                value=model.model_validate_json(text)
+                raw=json.loads(text)
+                if operation=='fidelity':raw=resolve_references(raw,data['evidence_catalog'])
+                value=model.model_validate(raw)
                 if check:check(value)
                 self.journal.finish(key,value)
                 return value
             except ValueError as exc:
                 self.contract_errors+=1;feedback=str(exc);rejected=output
-                self.store.event('format_correction','Resposta inválida devolvida uma vez para reparo.',operation=operation,detail=feedback)
-                self.emit('format_correction')
-                if attempt:raise BuildError(f'{operation}: contrato inválido após uma oportunidade de reparo. {feedback}') from exc
+                self.journal.failed(key,exc)
+                if self.progress:self.checkpoint()
+                await self.recover('format_correction',f'{operation}: corrigindo o contrato do agente. {feedback}',attempt,data.get('task',{}).get('id'))
+
+    async def recover(self,stage,message,attempt=1,task_id=None):
+        self.announce(stage,message,task_id=task_id,attempt=attempt)
+        # Cancelável; impede disparar chamadas sem pausa em falhas persistentes.
+        await asyncio.sleep(min(0.25*2**min(max(attempt-1,0),6),15))
+
+    def close_audit(self,snapshot):
+        atomic_write(snapshot.parent/'audit.json',json.dumps({'status':'closed'}))
+
+    async def recover_audits(self):
+        for path in self.store.path('control/audits').glob('*/audit.json'):
+            record=json.loads(path.read_text())
+            if record['status']!='running':continue
+            cwd=Path(record['workspace']).resolve()
+            if not cwd.is_relative_to(self.store.path('work').resolve()):
+                raise BuildError('A auditoria pendente aponta para fora das cópias do build.')
+            await asyncio.to_thread(restore_sources,cwd,path.parent/'source',path.parent/'changes')
+            await asyncio.to_thread(sync_tree,cwd)
+            self.close_audit(path.parent/'source')
+            self.announce('auditor_recovery','Fonte da auditoria interrompida restaurada; retomando o gate pendente.')
+
+    async def reserve_extra_files(self,key,workspace):
+        p=self.progress[key];scope=self.scopes[key]
+        async with self.publish_lock:
+            changes,tree=await asyncio.to_thread(workspace.changes)
+            extras=list(dict.fromkeys(relative_path(name) for name in [*changes,*p.get('scope_files',[])] if not matches(name,scope.writes)))
+            if extras:
+                p['additional_reserved_files']=sorted(set(p.get('additional_reserved_files',[]))|set(extras))
+                scope.writes=list(dict.fromkeys([*scope.writes,*extras]))
+                self.store.json(f'tasks/{key}/scope-{self.store.run_id}-{p.get("attempts",0)}.json',{
+                    'files':extras,'scope':scope.model_dump(),'policy':'Reserva exclusiva; G2 ainda exige fidelidade à task original.'})
+            rebased=await asyncio.to_thread(workspace.rebase)
+            p['scope_files']=[]
+            p['gates']=['completed','waiting','waiting','waiting']
+            p['check_results']={}
+            if rebased or not p.get('candidate_result'):
+                p.update(stage='g0',feedback={**(p.get('feedback') or {}),'scope_recovery':{
+                    'additional_reserved_files':p.get('additional_reserved_files',[]),'rebased_files':rebased,
+                    'rebase_directory':str(workspace.root/'.harness/rebase'),
+                    'required_change':'Continue somente a task original. Preserve as alterações integradas por outras tasks; resolva conflitos de merge indicados. A reserva não autoriza funcionalidades novas.'}})
+            else:
+                changes,tree=await asyncio.to_thread(workspace.audit,scope)
+                result=WriterResult.model_validate(p['candidate_result'])
+                result.files=list(dict.fromkeys([*result.files,*(name for name in changes if name in tree)]))
+                p.update(stage='g1',writer_result=result.model_dump(),tested_tree=tree,changes=changes)
+            await asyncio.to_thread(workspace.sync_sources)
+            self.checkpoint()
+        self.announce('scope_recovered',f'{key}: reserva ajustada com execução exclusiva; entrega seguirá pelos gates.',task_id=key)
 
     async def prepare_environment(self):
         self.announce('dependencies','Levantando dependências do plano e verificando o ambiente.')
@@ -225,6 +317,11 @@ class BuildEngine:
         self.scopes={s.task_id:s for s in value.tasks}
         self.scopes['BUILD-README']=TaskScope(task_id='BUILD-README',kind='documentation',writes=['README.md','.env.example'],reads=['**'],depends_on=list(set(self.tasks)-{'BUILD-README'}),
             requirement_ids=[f'R{i:03d}' for i in range(1,len(self.source['init']['document']['requirements'])+1)])
+        if cached:
+            previous_readme=next((s for s in cached['tasks'] if s['task_id']=='BUILD-README'),None)
+            if previous_readme:
+                self.scopes['BUILD-README'].writes=list(dict.fromkeys([*self.scopes['BUILD-README'].writes,
+                    *(relative_path(p,pattern=True) for p in previous_readme['writes'])]))
         self.validate_graph(self.scopes)
         previous=self.saved.get('tasks',{});accepted=self.saved.get('accepted_tree',{})
         for key,p in previous.items():
@@ -285,7 +382,9 @@ class BuildEngine:
                             if f'R{i:03d}' in self.scopes[key].requirement_ids],
             'constraints':self.source['init']['document']['constraints'],
             'stack':self.source['init']['document']['stack'],'feedback':feedback,
-            'workspace':str(workspace.root)}
+            'workspace':str(workspace.root),
+            'baseline_directory':str(workspace.root/'.harness/baseline'),
+            'additional_reserved_files':self.progress[key].get('additional_reserved_files',[])}
 
     def reject(self,key,gate,feedback,workspace):
         identity=feedback
@@ -295,9 +394,10 @@ class BuildEngine:
             identity=[(i['file'],i['acceptance']) for i in feedback['issues']]
         fingerprint=digest(json.dumps((gate,identity),sort_keys=True,ensure_ascii=False))
         signature=(key,fingerprint)
-        if signature in self.rejections:
-            raise BuildError(f'{key}: o mesmo conflito reapareceu no G{gate}. O contrato precisa de diagnóstico; não haverá tentativas por insistência.')
-        self.rejections[signature]=True
+        self.rejections[signature]=self.rejections.get(signature,0)+1
+        if self.rejections[signature]>1:
+            feedback=dict(feedback,repeated_conflict=self.rejections[signature],
+                recovery_instruction='A correção anterior não satisfez o mesmo aceite. Inspecione a causa, aplique uma mudança efetiva e preserve os checks congelados; não basta repetir a resposta.')
         self.corrections+=1
         self.progress[key].update(feedback=feedback,before_failed=manifest(workspace.root),stage='g0',check_results={})
         self.gate(key,gate,'waiting' if gate==1 else 'rejected')
@@ -320,8 +420,9 @@ class BuildEngine:
         verification=VerificationSpec.model_validate(p['verification']) if p.get('verification') else None
         before_failed=p.get('before_failed')
         # Gate receipts bind the approval to the exact saved source tree.
-        if p.get('stage','g0')!='g0' and p.get('tested_tree')!=await asyncio.to_thread(manifest,workspace.root):
+        if p.get('stage','g0') not in ('g0','scope_repair') and p.get('tested_tree')!=await asyncio.to_thread(manifest,workspace.root):
             p.update(stage='g0',gates=['waiting']*4,check_results={})
+        if p.get('stage')=='scope_repair':await self.reserve_extra_files(key,workspace)
         while True:
             feedback=p.get('feedback');before_failed=p.get('before_failed')
             if p.get('stage','g0')=='g0':
@@ -329,10 +430,25 @@ class BuildEngine:
                 p['gates']=['running','waiting','waiting','waiting']
                 self.gate(key,0,'running')
                 workspace.restore_checks()
-                result=await self.invoke('writer','write',self.code_context(key,workspace,feedback),WriterResult,workspace.root)
+                def validate_delivery(value):
+                    for name in value.files:relative_path(name)
+                result=await self.invoke('writer','write',self.code_context(key,workspace,feedback),WriterResult,workspace.root,validate_delivery)
+                p['candidate_result']=result.model_dump()
+                changes,tree=await asyncio.to_thread(workspace.changes)
+                extras=list(dict.fromkeys(relative_path(name) for name in [*changes,*result.files] if not matches(name,scope.writes)))
+                if extras:
+                    p.update(stage='scope_repair',scope_files=extras,force_serial=True)
+                    await asyncio.to_thread(workspace.sync_sources)
+                    self.checkpoint()
+                    self.announce('scope_recovery',f'{key}: reservando arquivos adicionais em execução exclusiva: '+', '.join(extras),task_id=key)
+                    raise ScopeExpansionPending()
                 changes,tree=await asyncio.to_thread(workspace.audit,scope)
-                if feedback and tree==before_failed:
-                    raise BuildError(f'{key}: o escritor não modificou a entrega para atender a devolução anterior.')
+                if feedback and (feedback.get('issues') or feedback.get('functional_failures')) and tree==before_failed:
+                    p['feedback']=dict(feedback,recovery_instruction='A entrega não mudou após a devolução. Inspecione os arquivos reais e corrija a causa indicada, sem alterar o aceite ou os testes.')
+                    self.checkpoint()
+                    await self.recover('writer_recovery',f'{key}: escritor precisa aplicar a correção ao código.',p['attempts'],key)
+                    continue
+                result.files=list(dict.fromkeys([*result.files,*(name for name in changes if name in tree)]))
                 await asyncio.to_thread(workspace.sync_sources)
                 p.update(stage='g1',writer_result=result.model_dump(),tested_tree=tree,changes=changes,check_results={})
                 self.gate(key,0,'completed')
@@ -340,17 +456,21 @@ class BuildEngine:
             tree=p['tested_tree'];changes=p['changes']
             if p['stage']=='g1':
                 self.gate(key,1,'running')
-                files=[];missing=[]
+                files=[];missing=[];merge_conflicts=[]
                 for name in result.files:
                     name=relative_path(name)
                     if not matches(name,scope.writes):raise BuildError(f'{key}: arquivo entregue fora da reserva: {name}.')
                     path=workspace.root/name
                     if not path.is_file() or not path.stat().st_size:missing.append(name)
-                    else:files.append(name)
+                    else:
+                        files.append(name)
+                        text=path.read_text(encoding='utf-8',errors='replace')
+                        if any(line.startswith('<<<<<<< ') for line in text.splitlines()) and any(line.startswith('>>>>>>> ') for line in text.splitlines()):
+                            merge_conflicts.append(name)
                 substantive=any(Path(f).suffix.lower() not in ('.md','.rst','.txt','.log') for f in files)
-                if missing or not files or (scope.kind=='code' and not substantive):
-                    feedback={'files_missing':missing,'required_change':('Grave os documentos reais previstos pela task; não basta afirmar que foram criados.' if scope.kind=='documentation' else 'Entregue os arquivos reais de código/configuração da task, não apenas uma descrição.'),'acceptance':'Arquivos da entrega existem e têm conteúdo apropriado à task.'}
-                    self.reject(key,1,feedback,workspace);before_failed=tree;await asyncio.sleep(0);continue
+                if missing or merge_conflicts or not files or (scope.kind=='code' and not substantive):
+                    feedback={'files_missing':missing,'merge_conflicts':merge_conflicts,'required_change':('Resolva os marcadores de merge preservando as contribuições necessárias das duas tasks.' if merge_conflicts else 'Grave os documentos reais previstos pela task; não basta afirmar que foram criados.' if scope.kind=='documentation' else 'Entregue os arquivos reais de código/configuração da task, não apenas uma descrição.'),'acceptance':'Arquivos da entrega existem, sem conflitos de merge e com conteúdo apropriado à task.'}
+                    self.reject(key,1,feedback,workspace);before_failed=tree;await self.recover('task_recovery',f'{key}: corrigindo a entrega conforme o gate.',p['attempts'],key);continue
                 p.update(stage='g2',files=files)
                 self.gate(key,1,'completed')
             files=p['files']
@@ -359,8 +479,7 @@ class BuildEngine:
                 self.gate(key,2,'running')
                 def validate_fidelity(value):
                     task=self.tasks[key]
-                    source='\n'.join([task['seed']['scope'],task['content']['objective'],*task['content']['implementation_steps'],
-                                      *task['content']['deliverables'],*self.code_context(key,workspace,feedback)['requirements']])
+                    source='\n'.join(requirement_quotes(self.code_context(key,workspace,feedback)))
                     for issue in value.issues:
                         name=relative_path(issue.file)
                         if not matches(name,scope.writes):raise ValueError('G2 só pode apontar arquivos da responsabilidade desta task.')
@@ -375,7 +494,7 @@ class BuildEngine:
                     raise BuildError(f'{key}: G2 alterou a fonte em vez de somente auditá-la.')
                 if not review.approved:
                     feedback={'issues':[i.model_dump() for i in review.issues]}
-                    self.reject(key,2,feedback,workspace);before_failed=tree;await asyncio.sleep(0);continue
+                    self.reject(key,2,feedback,workspace);before_failed=tree;await self.recover('task_recovery',f'{key}: corrigindo a entrega conforme o gate.',p['attempts'],key);continue
                 p.update(stage='g3',fidelity_review=review.model_dump())
                 self.gate(key,2,'completed')
             review=FidelityReview.model_validate(p['fidelity_review'])
@@ -444,7 +563,7 @@ class BuildEngine:
                 raise BuildError(f'{key}: os testes modificaram a fonte da aplicação; nenhuma alteração será integrada.')
             if failures:
                 feedback={'functional_failures':failures}
-                self.reject(key,3,feedback,workspace);before_failed=tree;await asyncio.sleep(0);continue
+                self.reject(key,3,feedback,workspace);before_failed=tree;await self.recover('task_recovery',f'{key}: corrigindo a entrega conforme o gate.',p['attempts'],key);continue
             p['stage']='publish';self.checkpoint()
             publishing=asyncio.create_task(self.accept_workspace(key,workspace,scope,p,verification,review,files,immutable))
             try:await asyncio.shield(publishing)
@@ -477,17 +596,33 @@ class BuildEngine:
         order={key:index for index,key in enumerate(self.tasks)}
         try:
             while pending or running:
-                for key in sorted(pending,key=order.get):
+                serial=sorted((k for k in pending if self.progress[k].get('force_serial')),key=order.get)
+                candidates=serial[:1] if serial else sorted(pending,key=order.get)
+                if (serial and running) or any(self.progress[k].get('force_serial') for k in running.values()):
+                    candidates=[]
+                for key in candidates:
                     if len(running)>=limit:break
                     if any(not self.progress[d]['completed'] for d in self.dependencies(key)):continue
                     if any(conflicts(self.scopes[key],self.scopes[active]) for active in running.values()):continue
                     running[asyncio.create_task(self.task_run(key))]=key;pending.remove(key)
+                    if self.progress[key].get('force_serial'):break
                 if not running:
                     raise BuildError('Nenhuma task pode iniciar: verifique dependências e reservas do blueprint.')
                 done,_=await asyncio.wait(running,return_when=asyncio.FIRST_COMPLETED)
                 for future in done:
-                    running.pop(future)
-                    await future
+                    key=running.pop(future)
+                    try:await future
+                    except ScopeExpansionPending:pending.add(key)
+                    except DependenciesBlocked:raise
+                    except BuildError as exc:
+                        p=self.progress[key]
+                        p['recovery_count']=p.get('recovery_count',0)+1
+                        p.update(stage='scope_repair',force_serial=True,completed=False,candidate_result=None,
+                            feedback={**(p.get('feedback') or {}),'execution_recovery':{
+                                'reason':str(exc),'required_change':'Diagnostique e corrija esta falha na task atual, preservando as entregas anteriores e os critérios de aceite.'}})
+                        self.checkpoint()
+                        pending.add(key)
+                        await self.recover('task_recovery',f'{key}: recuperação automática: {exc}',p['recovery_count'],key)
         finally:
             for future in running:future.cancel()
             if running:await asyncio.gather(*running,return_exceptions=True)
@@ -503,6 +638,7 @@ class BuildEngine:
             self.contract_errors=self.saved.get('contract_errors',0)
             self.operations=self.journal.metrics().get('operations',0)
             self.call_id=self.journal.metrics().get('call_id',0)
+            await self.recover_audits()
             from .agents import CLIAgents
             if isinstance(self.agents,CLIAgents):
                 absent=[]

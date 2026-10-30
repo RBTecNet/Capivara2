@@ -64,6 +64,14 @@
 - Falhas de agentes/comandos são recuperáveis na TUI. Persistir checkpoints,
   respostas e operações de integração antes de avançar gates; aprovações não
   podem ser inferidas por retomada. Modelos OpenCode vêm do CLI autenticado.
+- No build, erros recuperáveis de contrato, citação, comunicação e reserva não
+  encerram o módulo nem dependem do botão tentar novamente. Corrigir automaticamente
+  com evidência, logs e espera cancelável, sem limite de tentativas nem aprovação
+  por insistência. Cancelamento explícito e bloqueios reais de instalação continuam
+  preservando o progresso. A regra de uma oportunidade de contrato acima é do plan.
+- Arquivos adicionais observados em uma task exigem reserva exata e execução
+  exclusiva: drenar os workers, preservar/conciliar suas versões e passar G1–G3.
+  Ampliar reserva não adiciona requisitos nem aprova código fora da task original.
 - Todo artefato e status de módulos fica em `.harness` no projeto selecionado:
   logs, entrevistas (`enterviews`), prompts, contexto e controle. A aplicação
   futura pertence à raiz do projeto; todo o estado do harness fica em `.harness`.
