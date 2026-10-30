@@ -292,6 +292,10 @@ apenas propõe o JSON de runtime, pacotes de desenvolvimento e ferramentas neces
 à stack; ambiente e blueprint não liberam ferramentas ao modelo. É o controlador que executa check, tenta a instalação sem interação e
 repete o check. Comandos recebem stdin fechado e configurações não interativas;
 `sudo` automático usa `-n`. Uma dependência continua pendente se o check real falhar.
+Uma falha de acesso ao `package.json` pelo mapa de exports npm é reparada no
+verificador, sem reinstalar pacotes presentes nem alterar seus exports. Pacotes
+realmente ausentes continuam exigindo instalação. Instruções manuais resolvidas
+são arquivadas em `.harness/build/control/resolved-dependencies`.
 
 Um bloqueio interrompe o build antes da geração de código: o painel informa os pacotes,
 `.harness/build/manual-install.md` contém instruções e erros concretos, e

@@ -54,6 +54,7 @@ PLAN_STAGES = {
     "completed": (5, "Finalizando"),
 }
 BUILD_STAGES = {
+    "repairing_dependency_probe":(0,"Corrigindo verificação de dependência"),
     "checking_dependency":(0,"Verificando dependência"),
     "preparing_scope":(1,"Preparando escopo da thread"),
     "scope_prepared":(1,"Escopo da thread preparado"),

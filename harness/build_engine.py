@@ -22,6 +22,7 @@ from .run_events import BuildItem, InitEvent
 from .recovery import OperationJournal
 from .response_adapter import decode_response, contract_feedback
 from .task_view import TaskView
+from .dependency_probe import repair_metadata_check
 from .build_review import evidence_catalog, fidelity_schema, requirement_quotes, resolve_references
 
 
@@ -52,7 +53,8 @@ class BuildEngine:
         ready=sum(d.get('status')=='completed' for d in dependencies)
         items=[BuildItem('ENV','Preparação do ambiente','phase',status=state),
                BuildItem('ENV-INVENTORY','Levantar dependências','preparation',status=environment.get('inventory','waiting'))]
-        labels={'check':'verificando','install':'instalando','recheck':'conferindo instalação','ready':'disponível','blocked':'instalação pendente'}
+        labels={'check':'verificando','install':'instalando','recheck':'conferindo instalação',
+                'probe':'corrigindo verificação','ready':'disponível','blocked':'instalação pendente'}
         items.extend(BuildItem(f'ENV-D{i:03d}',d['name']+' · '+labels.get(d.get('step'), 'aguardando'),
             'preparation',status=d.get('status','waiting')) for i,d in enumerate(dependencies,1))
         completed_phases=int(state=='completed');phase_done={}
@@ -295,7 +297,20 @@ class BuildEngine:
                 entry.update(status='running',step='check');self.checkpoint()
                 self.announce('checking_dependency',f'Verificando dependência {index}/{len(dependencies)}: {dependency.name}.')
             prefix=f'log/dependency-{self.store.run_id}-{self.operations}-{index:03d}'
-            result=await run_command(dependency.check,cwd,self.store,prefix+'-check')
+            async def evaluate(command,phase):
+                outcome=await run_command(command,cwd,self.store,prefix+'-'+phase)
+                repaired=repair_metadata_check(command,outcome,self.store) if outcome['exit_code'] else None
+                if repaired is None:return command,outcome
+                if entry is not None:entry.update(step='probe');self.checkpoint()
+                self.announce('repairing_dependency_probe',f'Corrigindo a sondagem de metadados npm: {dependency.name}.')
+                previous=outcome
+                outcome=await run_command(repaired,cwd,self.store,prefix+'-'+phase+'-probe-repair')
+                self.store.json(f'control/dependency-probes/{self.store.run_id}-{self.operations}-{index:03d}-{phase}.json',{
+                    'dependency':dependency.name,'original_check':command.model_dump(),
+                    'corrected_check':repaired.model_dump(),'observed_error':previous['stderr'][-3000:],
+                    'exit_code':outcome['exit_code'],'policy':'Sondagem de metadados; não altera nem instala o pacote.'})
+                return repaired,outcome
+            check,result=await evaluate(dependency.check,'check')
             if result['exit_code']!=0:
                 for j,install in enumerate(dependency.install):
                     key=json.dumps(install.model_dump(),sort_keys=True)
@@ -306,10 +321,10 @@ class BuildEngine:
                     installed=await run_command(install,cwd,self.store,prefix+f'-install-{j}')
                     if installed['exit_code']!=0:break
                 if entry is not None:entry.update(step='recheck');self.checkpoint()
-                result=await run_command(dependency.check,cwd,self.store,prefix+'-recheck')
+                check,result=await evaluate(check,'recheck')
             if result['exit_code']==0:
                 self.packages_ready+=1
-                verified.append({'name':dependency.name,'check':dependency.check.model_dump(),
+                verified.append({'name':dependency.name,'check':check.model_dump(),
                                  'stdout':result['stdout'][-4000:],'stderr':result['stderr'][-4000:]})
             else:missing.append({'dependency':dependency.model_dump(),'exit_code':result['exit_code'],
                                  'error':result['stderr'][-3000:]})
@@ -345,6 +360,15 @@ class BuildEngine:
             recovery=f'Script disponível: {self.store.path("install-manual.sh")}. ' if commands else 'Não há instalador automático viável para estes pacotes. '
             raise DependenciesBlocked(f'Instale manualmente: {names}. {recovery}Instruções específicas: {self.store.path("manual-install.md")}. Depois execute build novamente.')
         self.announce('dependencies_ready','Dependências verificadas; preparação concluída.')
+        if track_environment:
+            previous=self.store.read_json('control/missing-dependencies.json',[])
+            if previous:
+                for name in ('install-manual.sh','manual-install.md','control/missing-dependencies.json'):
+                    source=self.store.path(name)
+                    if source.exists():
+                        target=self.store.path(f'control/resolved-dependencies/{self.store.run_id}/{Path(name).name}')
+                        target.parent.mkdir(parents=True,exist_ok=True);source.replace(target)
+                self.store.json('control/missing-dependencies.json',[])
         return verified
 
     async def prepare_tasks(self):

@@ -28,6 +28,9 @@ No blueprint, mapeie somente a task recebida, sem executar sua implementação.
 
 OPS = {
 'environment': """
+Disponibilidade npm não exige exportar package.json. Não use require.resolve(nome+'/package.json')
+como única prova: pacotes ESM, CLIs e tipos podem ocultar esse subpath mesmo instalados.
+Proponha resolução adequada ou inspeção do manifesto instalado; erro de exports não é pacote ausente.
 A primeira medida é levantar TODAS as dependências de runtime, desenvolvimento e testes
 necessárias à stack/ferramentas documentadas na fase 0, incluindo pacotes do projeto,
 CLIs selecionados e binários de navegador quando a ferramenta exigir (não só o pacote Playwright).

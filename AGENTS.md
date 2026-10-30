@@ -47,6 +47,10 @@
   impedir resolução de node_modules/venv ancestrais. Seu identificador, checkpoints,
   logs e comprovantes persistentes continuam em .harness; não reutilizar runtimes
   já preparados como evidência de instalação limpa.
+- Não confundir metadados npm não exportados com pacote ausente. Erros de
+  require.resolve(nome + "/package.json") por exports exigem corrigir a sondagem
+  antes de reinstalar ou pedir intervenção manual. A correção vale só para o
+  verificador de ambiente; não alterar exports nem código da aplicação.
 - Ao concluir as tasks, conferir instalação, build declarado e smoke curto de
   inicialização. Typecheck separado é diagnóstico informativo quando a aplicação
   compila e executa; registrar sua falha sem reprovar funcionamento. Não impor strict,
