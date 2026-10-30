@@ -133,12 +133,12 @@ class PlanTests(unittest.IsolatedAsyncioTestCase):
         marker.write_text("antigo")
         agents = PlanAgents()
         agents.cancel = True
-        with self.assertRaises(asyncio.CancelledError):
-            await PlanEngine(self.state, agents).run()
-        self.assertFalse(marker.exists())
-        self.assertFalse((self.root / ".harness/plan/final.md").exists())
-        self.assertEqual(read_status(self.root)["modules"]["plan"]["status"], "cancelled")
-        self.assertEqual(suggested_module(self.root), "plan")
+        await PlanEngine(self.state, agents).run()
+        self.assertTrue(marker.exists())
+        self.assertTrue((self.root / ".harness/plan/final.md").exists())
+        self.assertEqual(agents.calls, [])
+        self.assertEqual(read_status(self.root)["modules"]["plan"]["status"], "completed")
+        self.assertEqual(suggested_module(self.root), "build")
         self.assert_init_preserved()
         active = PlanEngine(self.state, PlanAgents())
         active.store.begin(self.state)

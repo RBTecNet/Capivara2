@@ -275,6 +275,9 @@ class BuildGateIntegrityTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(BuildError,'G2 alterou a fonte'):
             await BuildEngine(self.state,Mutator()).run()
         self.assertFalse((self.root/'dobro.py').exists())
+        agents=Builders();await BuildEngine(self.state,agents).run()
+        self.assertTrue(any(op=='fidelity' and data['task']['id']=='P1-T001' for _,op,data in agents.calls))
+        self.assertIn('n * 2',(self.root/'dobro.py').read_text())
 
     async def test_missing_late_test_dependency_blocks_without_blame_to_writer(self):
         class MissingTestTool(Builders):

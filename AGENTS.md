@@ -16,8 +16,9 @@
   nem alterar o arquivo. Usar o ANSI fornecido `build-busto-40x13.ans`, com
   ajuste proporcional à área disponível, como fallback automático
   quando o terminal não oferecer suporte a imagens nativas.
-- Manter o repositório somente local. Não adicionar remotos nem publicar ou
-  enviar commits até que o usuário autorize explicitamente.
+- O usuário autorizou configurar e enviar commits para o remoto
+  `git@github.com:RBTecNet/Capivara2.git`. Não publicar aplicações nem outros
+  repositórios sem autorização.
 - `init` e `plan` são documentais. O `build` executa preparação do ambiente e
   implementação do plano aprovado, com gates G0–G3 por task.
 - Build pode instalar dependências e executar CLIs sem confirmações, conforme
@@ -57,6 +58,12 @@
 - Preservar campos não alterados, decisões vigentes e aprovações por versão.
   Reavaliar estrutura apenas com operações concretas ou decisão específica,
   mantendo chamadas sem histórico e sem aprovação automática por tentativas.
+- Plan e build sempre retomam o progresso compatível salvo em disco, inclusive
+  no botão tentar novamente. Nunca apagar trabalho ao repetir o módulo. Init é
+  a exceção de reinicialização explícita. Mudança de origem deve preservar histórico.
+- Falhas de agentes/comandos são recuperáveis na TUI. Persistir checkpoints,
+  respostas e operações de integração antes de avançar gates; aprovações não
+  podem ser inferidas por retomada. Modelos OpenCode vêm do CLI autenticado.
 - Todo artefato e status de módulos fica em `.harness` no projeto selecionado:
   logs, entrevistas (`enterviews`), prompts, contexto e controle. A aplicação
   futura pertence à raiz do projeto; todo o estado do harness fica em `.harness`.

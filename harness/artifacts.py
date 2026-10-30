@@ -27,7 +27,20 @@ def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def atomic_write(path: Path, text: str) -> None:
+    missing=[]
+    parent=path.parent
+    while not parent.exists():
+        missing.append(parent)
+        parent=parent.parent
     path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=".writing-", dir=path.parent)
     try:
@@ -36,6 +49,8 @@ def atomic_write(path: Path, text: str) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        sync_directory(path.parent)
+        for directory in missing:sync_directory(directory.parent)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)

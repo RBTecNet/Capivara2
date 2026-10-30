@@ -143,7 +143,7 @@ class InitExecutionStep(Step):
             raise asyncio.CancelledError()
         return answer
 
-    @work(exclusive=True)
+    @work(exclusive=True, exit_on_error=False)
     async def execute(self) -> None:
         try:
             if self.module == "build":
@@ -170,11 +170,11 @@ class InitExecutionStep(Step):
                 self.error(str(exc))
                 self.progress("Build pausado por dependências. Instale os pacotes indicados e execute o build novamente.")
                 self.query_one("#init-retry",Button).display=True
-        except (InitError, OSError, ValueError) as exc:
+        except Exception as exc:
             if self.is_mounted:
                 self.query_one(InitDashboard).finish("failed")
                 self.error(str(exc))
-                self.progress(f"{self.module.title()} não concluído. Os registros disponíveis ficaram em .harness.")
+                self.progress(f"{self.module.title()} não concluído. Progresso preservado em .harness; tente novamente para retomar." if self.module != "init" else "Init não concluído. Registros disponíveis em .harness.")
                 self.query_one("#init-retry", Button).display = True
         finally:
             self.busy = False

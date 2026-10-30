@@ -1,4 +1,4 @@
-"""Catálogo configurável para a TUI; não inicia nem autentica CLIs."""
+"""Catálogo configurável e descoberta de metadados de modelos sob demanda."""
 
 import json
 import os
@@ -19,6 +19,7 @@ class Catalog:
     sources: dict[str, str]
     commands: dict[str, tuple[str, ...]] = field(default_factory=dict)
     build_commands: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    discovery: dict[str, bool] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path = DEFAULT_CONFIG) -> "Catalog":
@@ -81,7 +82,15 @@ class Catalog:
             if provider not in PROVIDERS or not isinstance(command, list) or not command or any(not isinstance(arg,str) or not arg for arg in command):
                 raise ValueError("Cada build_agents.<provedor>.command deve ser uma lista explícita de programa e argumentos.")
             build_commands[provider] = tuple(command)
-        return cls(path, models, sources, commands, build_commands)
+        opencode=providers.get('opencode',{})
+        configured=models.get('opencode',())
+        automatic=opencode.get('discover_cli',not configured or all(m.id=='default' for m in configured))
+        return cls(path, models, sources, commands, build_commands, {'opencode':bool(automatic)})
+
+    async def discover_models(self,provider,project_dir):
+        if provider=='opencode' and self.discovery.get(provider):
+            from .opencode_models import discover
+            self.models[provider],self.sources[provider]=await discover(project_dir)
 
 
 def read_codex_cache() -> tuple[Model, ...]:

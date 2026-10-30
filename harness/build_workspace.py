@@ -1,14 +1,16 @@
 """Cópias isoladas, reservas conservadoras e publicação com controle de versão."""
 
 import fnmatch
+import base64
 import hashlib
+import json
 import os
 from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 from uuid import uuid4
 
-from .artifacts import atomic_write
+from .artifacts import atomic_write, sync_directory
 from .build_artifacts import BuildError
 
 IGNORED = {'.harness','.git','node_modules','.venv','venv','__pycache__','.pytest_cache',
@@ -57,7 +59,7 @@ def manifest(root):
             if (Path(base)/name).is_symlink():
                 raise BuildError(f'Link simbólico em fonte não pode ser isolado com segurança: {Path(base)/name}.')
         for name in sorted(files):
-            if name.endswith(('.pyc','.pyo')) or name=='.env' or (name.startswith('.env.') and not name.endswith(('.example','.sample'))):
+            if name.startswith('.capivara-writing-') or name.endswith(('.pyc','.pyo')) or name=='.env' or (name.startswith('.env.') and not name.endswith(('.example','.sample'))):
                 continue
             path=Path(base)/name
             if path.is_symlink():
@@ -69,6 +71,13 @@ def manifest(root):
 
 def diff(before,after):
     return sorted(p for p in before.keys()|after.keys() if before.get(p)!=after.get(p))
+
+
+def sync_parents(directory,root):
+    while directory.is_relative_to(root):
+        sync_directory(directory)
+        if directory==root:break
+        directory=directory.parent
 
 
 def copy_project(root,destination, *, runtimes=True):
@@ -99,6 +108,32 @@ class Workspace:
         self.base=manifest(self.root)
         (self.root/'.harness/checks').mkdir(parents=True,mode=0o700)
         self.frozen_checks={}
+        self.save()
+
+    def save(self):
+        atomic_write(self.root/'.harness/workspace.json',json.dumps({
+            'base_root':self.base_root,'base':self.base,
+            'checks':{k:base64.b64encode(v).decode('ascii') for k,v in self.frozen_checks.items()}}))
+        sync_directory(self.root)
+        sync_directory(self.root.parent)
+
+    @classmethod
+    def resume(cls,project,store,path):
+        root=Path(path).resolve()
+        if not root.is_relative_to(store.path('work').resolve()):
+            raise BuildError('A cópia salva da task está fora do controle do build.')
+        data=json.loads((root/'.harness/workspace.json').read_text())
+        workspace=cls.__new__(cls)
+        workspace.project=project;workspace.root=root
+        workspace.base_root=data['base_root'];workspace.base=data['base']
+        workspace.frozen_checks={k:base64.b64decode(v) for k,v in data.get('checks',{}).items()}
+        return workspace
+
+    def sync_sources(self):
+        for name in manifest(self.root):
+            with (self.root/name).open('rb') as stream:os.fsync(stream.fileno())
+            sync_parents((self.root/name).parent,self.root)
+        self.save()
 
     def changes(self):
         after=manifest(self.root)
@@ -117,6 +152,7 @@ class Workspace:
         for path in directory.rglob('*'):
             if path.is_symlink(): raise BuildError('Checks não podem conter links simbólicos.')
             if path.is_file(): self.frozen_checks[path.relative_to(self.root).as_posix()]=path.read_bytes()
+        self.save()
 
     def restore_checks(self):
         directory=self.root/'.harness/checks'
@@ -141,10 +177,15 @@ class Workspace:
         current=manifest(self.project)
         touched=diff(self.base_root,current)
         if any(matches(p,scope.writes+scope.reads) for p in touched):
-            raise BuildError('A base da task mudou antes da integração. A cópia será refeita, sem sobrescrever alterações.')
+            raise BuildError('A base da task mudou antes da integração. A cópia foi preservada para resolver o conflito, sem sobrescrever alterações.')
         # Todos os conflitos são verificados antes da primeira substituição.
         backups={p:(self.project/p).read_bytes() if (self.project/p).is_file() else None for p in changes}
         modes={p:(self.project/p).stat().st_mode for p in changes if (self.project/p).is_file()}
+        self.sync_sources()
+        transaction={'status':'prepared','before':current,'after':after,'changes':changes,
+            'backups':{name:{'content':base64.b64encode(data).decode('ascii') if data is not None else None,
+                             'mode':modes.get(name)} for name,data in backups.items()}}
+        atomic_write(self.root/'.harness/publication.json',json.dumps(transaction))
         temporary_files=[]
         try:
             for name in changes:
@@ -156,17 +197,61 @@ class Workspace:
                     shutil.copy2(self.root/name,temporary)
                     actual=hashlib.sha256(temporary.read_bytes()).hexdigest()+('x' if os.access(temporary,os.X_OK) else '')
                     if actual!=after[name]:raise BuildError('A fonte mudou durante a integração; alterações foram restauradas.')
+                    with temporary.open('rb') as stream:os.fsync(stream.fileno())
                     os.replace(temporary,target)
                 elif target.exists(): target.unlink()
+                sync_parents(target.parent,self.project)
         except Exception:
             for name,data in backups.items():
                 target=self.project/name
                 if data is None: target.unlink(missing_ok=True)
                 else:
                     target.parent.mkdir(parents=True,exist_ok=True)
-                    target.write_bytes(data)
-                    os.chmod(target,modes[name])
+                    temporary=target.with_name('.capivara-writing-'+uuid4().hex)
+                    temporary_files.append(temporary)
+                    with temporary.open('wb') as stream:
+                        stream.write(data);stream.flush();os.fsync(stream.fileno())
+                    os.chmod(temporary,modes[name])
+                    os.replace(temporary,target)
+                sync_parents(target.parent,self.project)
+            transaction['status']='aborted'
+            atomic_write(self.root/'.harness/publication.json',json.dumps(transaction))
             raise
         finally:
             for path in temporary_files:path.unlink(missing_ok=True)
+        transaction['status']='completed'
+        atomic_write(self.root/'.harness/publication.json',json.dumps(transaction))
         return changes,manifest(self.project)
+
+    def recover_publication(self,expected_tree):
+        path=self.root/'.harness/publication.json'
+        if not path.exists():return None
+        transaction=json.loads(path.read_text())
+        if transaction['status']=='aborted':return None
+        if manifest(self.root)!=expected_tree or transaction['after']!=expected_tree:
+            raise BuildError('A cópia aprovada mudou durante a integração interrompida; arquivos preservados.')
+        current=manifest(self.project);before=transaction['before'];after=transaction['after']
+        for name in transaction['changes']:
+            if current.get(name) not in (before.get(name),after.get(name)):
+                raise BuildError(f'Conflito ao retomar integração: {name} foi editado fora do harness. Cópias preservadas.')
+        for name in transaction['changes']:
+            if current.get(name)==after.get(name):continue
+            target=self.project/name
+            if name in after:
+                target.parent.mkdir(parents=True,exist_ok=True)
+                temporary=target.with_name('.capivara-writing-'+uuid4().hex)
+                try:
+                    shutil.copy2(self.root/name,temporary)
+                    with temporary.open('rb') as stream:os.fsync(stream.fileno())
+                    os.replace(temporary,target)
+                finally:temporary.unlink(missing_ok=True)
+            else:target.unlink(missing_ok=True)
+            sync_parents(target.parent,self.project)
+        transaction['status']='completed'
+        atomic_write(path,json.dumps(transaction))
+        accepted=dict(before)
+        for name in transaction['changes']:
+            if name in after:accepted[name]=after[name]
+            else:accepted.pop(name,None)
+        # Edições externas em outros arquivos continuam visíveis para a invalidação de reservas.
+        return transaction['changes'],accepted

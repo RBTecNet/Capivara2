@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from .artifacts import ArtifactStore, InitError, atomic_write, digest, now, read_status
+from .artifacts import ArtifactStore, InitError, atomic_write, digest, now, read_status, sync_directory
 from .plan_artifacts import load_init, plan_completed
 from .plan_models import FinalPlan
 
@@ -55,14 +55,28 @@ class BuildStore(ArtifactStore):
         if state.prompt_source=='plan' and state.prompt and state.prompt != self.project_root.joinpath('plan/final.md').read_text(encoding='utf-8'):
             raise BuildError('O plan mudou após o wizard. Volte à seleção do módulo e escolha build novamente.')
         if self.root.exists() and any(self.root.iterdir()) and not self.path('state.json').is_file():
-            raise BuildError('A pasta .harness/build contém material não reconhecido e foi preservada.')
+            owner=self.read_json('owner.json',{})
+            if owner!={'owner':'capivara2','module':'build'}:
+                raise BuildError('A pasta .harness/build contém material não reconhecido e foi preservada.')
         self.root.mkdir(mode=0o700,exist_ok=True)
+        sync_directory(self.project_root)
+        self.json('owner.json',{'owner':'capivara2','module':'build'})
         for directory in ('log','control','work','checks','tasks'):
             self.path(directory).mkdir(parents=True,mode=0o700,exist_ok=True)
         previous=self.read_json('state.json',{})
         if not isinstance(previous,dict) or (previous and previous.get('owner')!='capivara2'):
             raise BuildError('Estado de build não reconhecido; os arquivos foram preservados.')
         if previous.get('plan_sha256')!=source['plan_sha256']:
+            if previous:
+                archive=self.project_root/'build-history'/self.run_id
+                archive.parent.mkdir(mode=0o700,exist_ok=True)
+                self.root.rename(archive)
+                sync_directory(archive.parent)
+                self.root.mkdir(mode=0o700)
+                sync_directory(self.project_root)
+                self.json('owner.json',{'owner':'capivara2','module':'build'})
+                for directory in ('log','control','work','checks','tasks'):
+                    self.path(directory).mkdir(mode=0o700)
             previous={'owner':'capivara2','plan_sha256':source['plan_sha256'],'tasks':{},'accepted_tree':{},'blueprint':None}
         self.json('state.json',previous)
         self.json('source.json',source)

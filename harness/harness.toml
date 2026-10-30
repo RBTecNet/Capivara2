@@ -1,4 +1,4 @@
-# Catálogo desta primeira etapa. Nenhum CLI é iniciado para consultar modelos.
+# Catálogo; OpenCode consulta metadados do CLI autenticado sob demanda.
 # "default" representa usar o padrão do CLI, sem escolher um modelo específico.
 # Cadastre os IDs e efforts reais que deseja disponibilizar na TUI.
 
@@ -12,6 +12,7 @@ models = [{ id = "default", name = "Padrão do CLI", efforts = ["default"] }]
 models = [{ id = "default", name = "Padrão do CLI", efforts = ["default"] }]
 
 [providers.opencode]
+discover_cli = true
 models = [{ id = "default", name = "Padrão do CLI", efforts = ["default"] }]
 
 [providers.agy]

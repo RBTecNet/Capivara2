@@ -5,9 +5,8 @@ import fcntl
 import json
 import os
 from pathlib import Path
-import shutil
 
-from .artifacts import ArtifactStore, InitError, atomic_write, digest, now, read_status
+from .artifacts import ArtifactStore, InitError, atomic_write, digest, now, read_status, sync_directory
 from .init_models import FinalPrompt, Review
 from .plan_models import FinalPlan, PlanReview
 
@@ -112,14 +111,21 @@ class PlanStore(ArtifactStore):
         source = load_init(self.project_dir)
         if state.module == "plan" and state.prompt and state.prompt != source["approved_prompt"]:
             raise InitError("O prompt do init mudou após a configuração. Volte à seleção do módulo e escolha plan novamente.")
-        if self.root.exists():
-            shutil.rmtree(self.root)
-        self.root.mkdir(mode=0o700)
+        previous=self.read_json("source.json")
+        if previous and previous!=source:
+            archive=self.project_root/'plan-history'/self.run_id
+            archive.parent.mkdir(mode=0o700,exist_ok=True)
+            self.root.rename(archive)
+            sync_directory(archive.parent)
+        self.already_completed=plan_completed(self.project_dir,source['source_prompt_sha256']) if previous==source else False
+        self.root.mkdir(mode=0o700,exist_ok=True)
+        sync_directory(self.project_root)
         for directory in ("log", "control", "phases", "context"):
-            self.path(directory).mkdir(mode=0o700)
+            self.path(directory).mkdir(mode=0o700,exist_ok=True)
         self.json("source.json", source)
-        self.json("control/settings.json", {"writer": asdict(state.writer), "reviewer": asdict(state.reviewer),
+        self.json(f"control/runs/{self.run_id}.json", {"writer": asdict(state.writer), "reviewer": asdict(state.reviewer),
                                           "context_policy": "fresh"})
+        if self.already_completed:return source
         data = read_status(self.project_dir)
         data["modules"]["plan"] = {"status": "running", "run_id": self.run_id, "started_at": now(),
                                    "stage": "starting", "source_prompt_sha256": source["source_prompt_sha256"]}

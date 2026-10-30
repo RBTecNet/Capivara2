@@ -1,8 +1,6 @@
 """Builder retomável: dependências, reservas de arquivos e gates G0–G3."""
 
 import asyncio
-from dataclasses import asdict
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,6 +17,7 @@ from .build_models import (BuildBlueprint, EnvironmentSpec, FidelityReview, Task
 from .build_workspace import Workspace, conflicts, diff, manifest, matches, relative_path
 from .plan_models import agent_schema
 from .run_events import BuildItem, InitEvent
+from .recovery import OperationJournal
 
 
 class BuildEngine:
@@ -33,6 +32,7 @@ class BuildEngine:
         self.publish_lock=asyncio.Lock()
         self.tools_lock=asyncio.Lock()
         self.rejections={};self.executed_checks={}
+        self.journal=None
 
     def emit(self,kind='stage_changed'):
         if not self.on_event:return
@@ -66,7 +66,7 @@ class BuildEngine:
         self.stage=stage;self.event_task_id=details.get('task_id');self.store.event(stage,message,**details);self.emit()
 
     def checkpoint(self):
-        self.saved.update(tasks=self.progress,blueprint={'tasks':[s.model_dump() for s in self.scopes.values()]})
+        self.saved.update(corrections=self.corrections,contract_errors=self.contract_errors,tasks=self.progress,blueprint={'tasks':[s.model_dump() for s in self.scopes.values()]})
         self.store.json('state.json',self.saved)
         self.emit('counts_changed')
 
@@ -76,7 +76,7 @@ class BuildEngine:
         self.checkpoint()
 
     async def invoke(self,role,operation,data,model,cwd,check=None):
-        self.operations+=1;feedback='';rejected=None
+        feedback='';rejected=None
         schema=agent_schema(model)
         if operation=='verification' and data.get('delivered_files'):
             task=data['task']
@@ -84,8 +84,20 @@ class BuildEngine:
                     *task['content']['deliverables'],*data.get('requirements',[])]
             schema['$defs']['FunctionalCheck']['properties']['target_files']['items']['enum']=data['delivered_files']
             schema['$defs']['FunctionalCheck']['properties']['requirement_quote']['enum']=list(dict.fromkeys(quotes))
+        context_tree=await asyncio.to_thread(manifest,cwd)
+        key=self.journal.key(role,operation,dict(data,source_tree=context_tree),schema)
+        cached=self.journal.cached(key,model) if operation!='write' else None
+        if cached is not None:
+            try:
+                if check:check(cached)
+                return cached
+            except ValueError as exc:
+                self.journal.abandon(key,str(exc))
+                feedback=str(exc)
         for attempt in range(2):
-            self.call_id+=1;call=self.call_id
+            self.call_id=self.journal.next_call();call=self.call_id
+            self.journal.start(key,role=role,operation=operation,data=data)
+            self.operations=self.journal.metrics().get('operations',0)
             request=dict(data,contract_error=feedback,rejected_response=rejected)
             self.active[call]=role;self.last_role=role;self.emit('agent_started')
             try:
@@ -94,11 +106,16 @@ class BuildEngine:
             finally:
                 self.active.pop(call,None);self.emit('agent_finished')
             self.store.write(f'log/{role}-{call:04d}.response.txt',output)
+            if operation in ('fidelity','verification') and await asyncio.to_thread(manifest,cwd)!=context_tree:
+                gate='G2' if operation=='fidelity' else 'G3'
+                self.journal.abandon(key,f'{gate} alterou a fonte durante a auditoria.')
+                raise BuildError(f'{gate} alterou a fonte da aplicação; resposta descartada e cópia preservada.')
             try:
                 text=output.strip()
                 if text.startswith('```') and text.endswith('```'):text='\n'.join(text.splitlines()[1:-1])
                 value=model.model_validate_json(text)
                 if check:check(value)
+                self.journal.finish(key,value)
                 return value
             except ValueError as exc:
                 self.contract_errors+=1;feedback=str(exc);rejected=output
@@ -109,7 +126,8 @@ class BuildEngine:
     async def prepare_environment(self):
         self.announce('dependencies','Levantando dependências do plano e verificando o ambiente.')
         directory=self.store.path('control/environment-analysis');directory.mkdir(parents=True,exist_ok=True)
-        spec=await self.invoke('reviewer','environment',{'phase_zero':self.source['plan']['phases'][0],
+        cached=self.store.read_json('control/dependencies.json')
+        spec=EnvironmentSpec.model_validate(cached) if cached else await self.invoke('reviewer','environment',{'phase_zero':self.source['plan']['phases'][0],
             'stack':self.source['init']['document']['stack'],'tools':self.source['init']['document']['tools'],
             'system':platform.system(),'platform':platform.platform(),'providers':sorted({self.state.writer.provider,self.state.reviewer.provider}),
             'executables':{name:shutil.which(name) for name in ('node','npm','pnpm','python3','pip','uv','cargo','go','dotnet','apt-get','dnf','pacman','brew','codex','claude','opencode','agy')}},
@@ -209,6 +227,17 @@ class BuildEngine:
             requirement_ids=[f'R{i:03d}' for i in range(1,len(self.source['init']['document']['requirements'])+1)])
         self.validate_graph(self.scopes)
         previous=self.saved.get('tasks',{});accepted=self.saved.get('accepted_tree',{})
+        for key,p in previous.items():
+            if not p.get('completed') and p.get('stage')=='publish' and p.get('workspace'):
+                workspace=Workspace.resume(self.state.project_dir,self.store,p['workspace'])
+                recovered=await asyncio.to_thread(workspace.recover_publication,p['tested_tree'])
+                if recovered:
+                    published,accepted=recovered
+                    p.update(completed=True,stage='completed',gates=['completed']*4,published=published)
+                    self.write_approval(key,p)
+                    self.saved['accepted_tree']=accepted
+                    self.store.json('state.json',self.saved)
+        accepted=self.saved.get('accepted_tree',{})
         current=await asyncio.to_thread(manifest,self.state.project_dir)
         changed=diff(accepted,current) if accepted else []
         invalid={key for key,scope in self.scopes.items() if any(matches(p,scope.writes+scope.reads) for p in changed)}
@@ -218,9 +247,14 @@ class BuildEngine:
             invalid=expanded
         for key in self.tasks:
             p=previous.get(key,{})
-            if p.get('completed') and key not in invalid and p.get('gates')==['completed']*4:
+            if p.get('completed') and p.get('gates')!=['completed']*4:
+                p.update(completed=False,stage='g1' if p.get('writer_result') else 'g0',check_results={})
+            if p and key not in invalid:
                 self.progress[key]=p
-            else:self.progress[key]={'gates':['waiting']*4,'completed':False,'started':False,'attempts':0}
+            else:
+                if p:
+                    self.store.json(f'tasks/{key}/history/{self.store.run_id}.json',p)
+                self.progress[key]={'gates':['waiting']*4,'completed':False,'started':False,'attempts':0,'stage':'g0'}
         self.saved['accepted_tree']=current
         self.checkpoint()
 
@@ -265,62 +299,87 @@ class BuildEngine:
             raise BuildError(f'{key}: o mesmo conflito reapareceu no G{gate}. O contrato precisa de diagnóstico; não haverá tentativas por insistência.')
         self.rejections[signature]=True
         self.corrections+=1
+        self.progress[key].update(feedback=feedback,before_failed=manifest(workspace.root),stage='g0',check_results={})
         self.gate(key,gate,'waiting' if gate==1 else 'rejected')
         self.store.json(f'tasks/{key}/rejection-{self.progress[key]["attempts"]}.json',{'gate':gate,'feedback':feedback})
 
     async def task_run(self,key):
         scope=self.scopes[key];p=self.progress[key]
-        async with self.publish_lock:
-            copying=asyncio.create_task(asyncio.to_thread(Workspace,self.state.project_dir,self.store,key))
-            try:workspace=await asyncio.shield(copying)
-            except asyncio.CancelledError:
-                await copying
-                raise
-        feedback=None;verification=None;before_failed=None
+        if p.get('workspace'):
+            workspace=Workspace.resume(self.state.project_dir,self.store,p['workspace'])
+        else:
+            async with self.publish_lock:
+                copying=asyncio.create_task(asyncio.to_thread(Workspace,self.state.project_dir,self.store,key))
+                try:workspace=await asyncio.shield(copying)
+                except asyncio.CancelledError:
+                    workspace=await copying
+                    p.update(workspace=str(workspace.root),stage='g0');self.checkpoint()
+                    raise
+            p.update(workspace=str(workspace.root),stage='g0');self.checkpoint()
+        feedback=p.get('feedback')
+        verification=VerificationSpec.model_validate(p['verification']) if p.get('verification') else None
+        before_failed=p.get('before_failed')
+        # Gate receipts bind the approval to the exact saved source tree.
+        if p.get('stage','g0')!='g0' and p.get('tested_tree')!=await asyncio.to_thread(manifest,workspace.root):
+            p.update(stage='g0',gates=['waiting']*4,check_results={})
         while True:
-            p['attempts']+=1
-            p['gates']=['running','waiting','waiting','waiting']
-            self.gate(key,0,'running')
-            before=await asyncio.to_thread(manifest,workspace.root)
-            workspace.restore_checks()
-            result=await self.invoke('writer','write',self.code_context(key,workspace,feedback),WriterResult,workspace.root)
-            changes,tree=await asyncio.to_thread(workspace.audit,scope)
-            if feedback and tree==before_failed:
-                raise BuildError(f'{key}: o escritor não modificou a entrega para atender a devolução anterior.')
-            self.gate(key,0,'completed');self.gate(key,1,'running')
-            files=[];missing=[]
-            for name in result.files:
-                name=relative_path(name)
-                if not matches(name,scope.writes):raise BuildError(f'{key}: arquivo entregue fora da reserva: {name}.')
-                path=workspace.root/name
-                if not path.is_file() or not path.stat().st_size:missing.append(name)
-                else:files.append(name)
-            substantive=any(Path(f).suffix.lower() not in ('.md','.rst','.txt','.log') for f in files)
-            if missing or not files or (scope.kind=='code' and not substantive):
-                feedback={'files_missing':missing,'required_change':('Grave os documentos reais previstos pela task; não basta afirmar que foram criados.' if scope.kind=='documentation' else 'Entregue os arquivos reais de código/configuração da task, não apenas uma descrição.'),'acceptance':'Arquivos da entrega existem e têm conteúdo apropriado à task.'}
-                self.reject(key,1,feedback,workspace);before_failed=tree;await asyncio.sleep(0);continue
-            self.gate(key,1,'completed');self.gate(key,2,'running')
-            immutable=tree
-            def validate_fidelity(value):
-                task=self.tasks[key]
-                source='\n'.join([task['seed']['scope'],task['content']['objective'],*task['content']['implementation_steps'],
-                                  *task['content']['deliverables'],*self.code_context(key,workspace,feedback)['requirements']])
-                for issue in value.issues:
-                    name=relative_path(issue.file)
-                    if not matches(name,scope.writes):raise ValueError('G2 só pode apontar arquivos da responsabilidade desta task.')
-                    if issue.requirement_quote not in source:raise ValueError('Cite literalmente um requisito da task/origem, sem inventar exigências.')
+            feedback=p.get('feedback');before_failed=p.get('before_failed')
+            if p.get('stage','g0')=='g0':
+                p['attempts']+=1
+                p['gates']=['running','waiting','waiting','waiting']
+                self.gate(key,0,'running')
+                workspace.restore_checks()
+                result=await self.invoke('writer','write',self.code_context(key,workspace,feedback),WriterResult,workspace.root)
+                changes,tree=await asyncio.to_thread(workspace.audit,scope)
+                if feedback and tree==before_failed:
+                    raise BuildError(f'{key}: o escritor não modificou a entrega para atender a devolução anterior.')
+                await asyncio.to_thread(workspace.sync_sources)
+                p.update(stage='g1',writer_result=result.model_dump(),tested_tree=tree,changes=changes,check_results={})
+                self.gate(key,0,'completed')
+            result=WriterResult.model_validate(p['writer_result'])
+            tree=p['tested_tree'];changes=p['changes']
+            if p['stage']=='g1':
+                self.gate(key,1,'running')
+                files=[];missing=[]
+                for name in result.files:
+                    name=relative_path(name)
+                    if not matches(name,scope.writes):raise BuildError(f'{key}: arquivo entregue fora da reserva: {name}.')
                     path=workspace.root/name
-                    if issue.missing:
-                        if path.exists():raise ValueError('O arquivo apontado como ausente existe.')
-                    elif not issue.evidence_quote or not path.is_file() or issue.evidence_quote not in path.read_text(encoding='utf-8',errors='replace'):
-                        raise ValueError('A evidência deve ser um trecho literal do arquivo entregue.')
-            review=await self.invoke('reviewer','fidelity',{**self.code_context(key,workspace,feedback),'delivered_files':files,'changed_files':changes},FidelityReview,workspace.root,validate_fidelity)
-            if await asyncio.to_thread(manifest,workspace.root)!=immutable:
-                raise BuildError(f'{key}: G2 alterou a fonte em vez de somente auditá-la.')
-            if not review.approved:
-                feedback={'issues':[i.model_dump() for i in review.issues]}
-                self.reject(key,2,feedback,workspace);before_failed=tree;await asyncio.sleep(0);continue
-            self.gate(key,2,'completed');self.gate(key,3,'running')
+                    if not path.is_file() or not path.stat().st_size:missing.append(name)
+                    else:files.append(name)
+                substantive=any(Path(f).suffix.lower() not in ('.md','.rst','.txt','.log') for f in files)
+                if missing or not files or (scope.kind=='code' and not substantive):
+                    feedback={'files_missing':missing,'required_change':('Grave os documentos reais previstos pela task; não basta afirmar que foram criados.' if scope.kind=='documentation' else 'Entregue os arquivos reais de código/configuração da task, não apenas uma descrição.'),'acceptance':'Arquivos da entrega existem e têm conteúdo apropriado à task.'}
+                    self.reject(key,1,feedback,workspace);before_failed=tree;await asyncio.sleep(0);continue
+                p.update(stage='g2',files=files)
+                self.gate(key,1,'completed')
+            files=p['files']
+            immutable=tree
+            if p['stage']=='g2':
+                self.gate(key,2,'running')
+                def validate_fidelity(value):
+                    task=self.tasks[key]
+                    source='\n'.join([task['seed']['scope'],task['content']['objective'],*task['content']['implementation_steps'],
+                                      *task['content']['deliverables'],*self.code_context(key,workspace,feedback)['requirements']])
+                    for issue in value.issues:
+                        name=relative_path(issue.file)
+                        if not matches(name,scope.writes):raise ValueError('G2 só pode apontar arquivos da responsabilidade desta task.')
+                        if issue.requirement_quote not in source:raise ValueError('Cite literalmente um requisito da task/origem, sem inventar exigências.')
+                        path=workspace.root/name
+                        if issue.missing:
+                            if path.exists():raise ValueError('O arquivo apontado como ausente existe.')
+                        elif not issue.evidence_quote or not path.is_file() or issue.evidence_quote not in path.read_text(encoding='utf-8',errors='replace'):
+                            raise ValueError('A evidência deve ser um trecho literal do arquivo entregue.')
+                review=await self.invoke('reviewer','fidelity',{**self.code_context(key,workspace,feedback),'delivered_files':files,'changed_files':changes},FidelityReview,workspace.root,validate_fidelity)
+                if await asyncio.to_thread(manifest,workspace.root)!=immutable:
+                    raise BuildError(f'{key}: G2 alterou a fonte em vez de somente auditá-la.')
+                if not review.approved:
+                    feedback={'issues':[i.model_dump() for i in review.issues]}
+                    self.reject(key,2,feedback,workspace);before_failed=tree;await asyncio.sleep(0);continue
+                p.update(stage='g3',fidelity_review=review.model_dump())
+                self.gate(key,2,'completed')
+            review=FidelityReview.model_validate(p['fidelity_review'])
+            self.gate(key,3,'running')
             if verification is None:
                 def validate_checks(value):
                     if scope.kind!='documentation' and not value.checks:raise ValueError('Código/setup exige ao menos uma verificação funcional executável.')
@@ -356,21 +415,25 @@ class BuildEngine:
                     'delivered_files':files,'scratch_directory':'.harness/checks','tools_directory':str(self.store.path('tools'))},VerificationSpec,workspace.root,validate_checks)
                 if await asyncio.to_thread(manifest,workspace.root)!=immutable:
                     raise BuildError(f'{key}: o verificador G3 alterou código da aplicação para preparar os testes.')
-                if verification.dependencies:
-                    async with self.tools_lock:
-                        tools=self.store.path('tools');tools.mkdir(parents=True,exist_ok=True)
-                        await self.ensure_dependencies(verification.dependencies,tools)
                 workspace.freeze_checks()
+                p['verification']=verification.model_dump();self.checkpoint()
                 self.store.json(f'tasks/{key}/verification.json',verification.model_dump())
                 for name,data in workspace.frozen_checks.items():
                     target=self.store.path(f'checks/{key}/{name.removeprefix(".harness/checks/")}')
                     target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
+            if verification.dependencies:
+                async with self.tools_lock:
+                    tools=self.store.path('tools');tools.mkdir(parents=True,exist_ok=True)
+                    await self.ensure_dependencies(verification.dependencies,tools)
             workspace.restore_checks()
             await asyncio.to_thread(workspace.clear_bytecode)
             failures=[]
             for index,check in enumerate(verification.checks,1):
-                outcome=await run_command(check.command,workspace.root,self.store,
-                    f'log/{self.store.run_id}-{key}-g3-{p["attempts"]}-{index}',test=True)
+                outcome=p.setdefault('check_results',{}).get(str(index))
+                if outcome is None:
+                    outcome=await run_command(check.command,workspace.root,self.store,
+                        f'log/{self.store.run_id}-{key}-g3-{p["attempts"]}-{index}',test=True)
+                    p['check_results'][str(index)]=outcome;self.checkpoint()
                 if outcome['exit_code']!=0 or (check.expected_stdout is not None and outcome['stdout'].strip()!=check.expected_stdout.strip()):
                     failures.append({'command':check.command.model_dump(),'exit_code':outcome['exit_code'],
                         'expected_stdout':check.expected_stdout,
@@ -382,6 +445,7 @@ class BuildEngine:
             if failures:
                 feedback={'functional_failures':failures}
                 self.reject(key,3,feedback,workspace);before_failed=tree;await asyncio.sleep(0);continue
+            p['stage']='publish';self.checkpoint()
             publishing=asyncio.create_task(self.accept_workspace(key,workspace,scope,p,verification,review,files,immutable))
             try:await asyncio.shield(publishing)
             except asyncio.CancelledError:
@@ -397,11 +461,14 @@ class BuildEngine:
             published,accepted=await asyncio.to_thread(workspace.publish,scope,tested_tree)
             self.saved['accepted_tree']=accepted
             self.gate(key,3,'completed')
-            p.update(completed=True,workspace=str(workspace.root),files=files,published=published)
-            self.store.json(f'tasks/{key}/approval.json',{'task_id':key,'gates':p['gates'],
-                'checks_executed':len(verification.checks),'attempts':p['attempts'],'files':files,
-                'fidelity_review':review.model_dump()})
+            p.update(completed=True,stage='completed',workspace=str(workspace.root),files=files,published=published)
+            self.write_approval(key,p)
             self.checkpoint()
+
+    def write_approval(self,key,p):
+        self.store.json(f'tasks/{key}/approval.json',{'task_id':key,'gates':['completed']*4,
+            'checks_executed':len(p['verification']['checks']),'attempts':p['attempts'],'files':p['files'],
+            'fidelity_review':p['fidelity_review']})
 
     async def schedule(self):
         pending={key for key in self.tasks if not self.progress[key]['completed']}
@@ -431,6 +498,11 @@ class BuildEngine:
             raise BuildError('Escolha modo serial/paralelo e máximo de 1 a 32 agentes.')
         try:
             self.source,self.saved=self.store.begin(self.state)
+            self.journal=OperationJournal(self.store,self.source['plan_sha256'])
+            self.corrections=self.saved.get('corrections',0)
+            self.contract_errors=self.saved.get('contract_errors',0)
+            self.operations=self.journal.metrics().get('operations',0)
+            self.call_id=self.journal.metrics().get('call_id',0)
             from .agents import CLIAgents
             if isinstance(self.agents,CLIAgents):
                 absent=[]

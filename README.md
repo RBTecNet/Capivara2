@@ -29,8 +29,8 @@ Para usar outro projeto, execute `capivara2` a partir daquela pasta, ou edite o
 caminho na primeira tela.
 
 Após cada rodada com implementação ou correção, a instalação local é atualizada
-e um commit local é criado, conforme [AGENTS.md](AGENTS.md). O repositório
-permanece sem remoto até autorização do usuário.
+e um commit local é criado, conforme [AGENTS.md](AGENTS.md). O envio para o remoto
+exige autorização do usuário.
 
 ## Fluxo
 
@@ -296,9 +296,36 @@ Tasks têm quatro bolinhas G0–G3 e uma barra mostra o progresso das entregas c
 
 Execuções seguintes reutilizam tasks já integradas quando a fonte e os arquivos
 continuam válidos. Alterações externas invalidam as reservas afetadas e suas dependentes.
+Tasks incompletas também são retomadas: a cópia de trabalho, o último gate confirmado,
+as devoluções e os checks funcionais congelados ficam salvos em disco. Um check já
+concluído não é repetido na retomada se a fonte permanece idêntica. Uma chamada de
+agente ou comando interrompido antes de confirmar sua conclusão pode ser repetido.
 O build preserva o init, o plan e arquivos existentes da aplicação. Histórico de comandos,
 saídas de agentes, resultados e cópias ficam em `.harness/build`, com logs separados por
 execução. Nenhum push ou publicação é realizado.
+
+### Recuperação do plan e do build
+
+**Tentar novamente** e abrir o mesmo módulo em uma nova execução retomam o trabalho
+salvo. Isso também vale após cancelamento, falha do CLI, encerramento do processo
+ou queda de energia. Uma falha inesperada da execução aparece no dashboard e mantém
+o botão de recuperação disponível. O init continua sendo a exceção: executá-lo
+novamente reinicializa os artefatos, conforme seu fluxo original.
+
+No plan, recibos em `plan/control/operations` preservam as respostas validadas.
+O controlador reconstrói o estado localmente, sem chamar novamente os agentes para
+operações confirmadas, e segue da primeira operação pendente. Logs antigos de
+contexto/resposta também podem ser recuperados quando compatíveis com o contrato
+atual. Correções exatas já autorizadas são idempotentes e continuam exigindo revisão.
+Executar um plan já concluído preserva também o status do build.
+
+No build, `state.json` registra o gate pendente e a cópia isolada de cada task.
+O diretório `.harness` dessa cópia preserva a base, os scripts congelados e o diário
+de integração. Esse diário é gravado antes de substituir arquivos na raiz; se a
+integração for interrompida, a próxima execução pode concluí-la sem regerar código.
+Edições externas conflitantes são preservadas e indicadas para resolução.
+Quando a origem aprovada muda, o controle anterior é arquivado em
+`.harness/plan-history` ou `.harness/build-history`, conforme o módulo.
 
 ### CLIs sem confirmação
 
@@ -386,8 +413,7 @@ as telas de múltipla escolha durante o andamento do init.
 
 ## Modelos e efforts
 
-O catálogo fica em [harness/harness.toml](harness/harness.toml). A seleção não
-consulta os CLIs nem faz testes de disponibilidade. Codex, Claude, OpenCode e agy
+O catálogo fica em [harness/harness.toml](harness/harness.toml). Codex, Claude, OpenCode e agy
 podem ser escolhidos para escritor e revisor. O CLI selecionado é iniciado
 diretamente ao executar o módulo; falhas de execução ou autenticação são registradas.
 
@@ -396,7 +422,18 @@ Por padrão, Codex aproveita os modelos e efforts de
 arquivo existe e é válido. Modelos ocultos no cache são ignorados. O cache é
 somente lido; se estiver ausente ou inválido, a TUI usa o catálogo TOML.
 
-Os demais CLIs começam com “Padrão do CLI”. O identificador `default` representa
+Ao selecionar OpenCode, o wizard consulta os modelos habilitados e variantes de
+effort do CLI autenticado no contexto da pasta escolhida, usando
+`opencode api --standalone model.list`. CLIs anteriores usam a listagem
+`opencode models` como alternativa. IDs incluem o provedor (`provedor/modelo`)
+para preservar a distinção entre catálogos. A consulta não gera código nem inspeciona
+dependências da aplicação. Um cache breve guarda somente IDs, nomes e efforts;
+credenciais, headers e configuração da API não são copiados. Se a consulta falhar,
+o último catálogo válido pode ser usado; sem catálogo válido, a tela informa a falha
+e permite tentar novamente. Para usar apenas uma lista manual, configure
+`discover_cli = false` em `[providers.opencode]` e preencha `models`.
+
+Claude e agy continuam começando com “Padrão do CLI”. O identificador `default` representa
 deixar que o CLI escolha o padrão, sem presumir um ID de modelo ou effort.
 Cadastre os modelos reais que deseja listar, por exemplo:
 

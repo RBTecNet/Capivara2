@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from rich.text import Text
-from textual import events
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Button, Input, OptionList, Static, TextArea
@@ -325,14 +325,13 @@ class HarnessApp(App[WizardState]):
                              if key == "manual" else FilePromptStep(self.state.prompt_file))
         elif screen.kind == "provider":
             models = self.catalog.models.get(key, ())
-            if not models:
+            if not models and not self.catalog.discovery.get(key):
                 screen.error(f"Nenhum modelo configurado para {PROVIDERS[key]}. Adicione modelos no arquivo {self.catalog.path}.")
                 return
-            self.push_screen(ChoiceStep("Modelo do escritor" if screen.role == "writer" else "Modelo do revisor",
-                                       f"{PROVIDERS[key]} · {self.catalog.sources[key]}", screen.section, "model",
-                                       [(m.id, m.name if m.id == "default" else f"{m.name}  ·  {m.id}", False)
-                                        for m in models],
-                                       provider=key, role=screen.role))
+            if self.catalog.discovery.get(key):
+                self.load_models(screen,key)
+            else:
+                self.show_models(screen,key)
         elif screen.kind == "model":
             model = next(m for m in self.catalog.models[screen.provider] if m.id == key)
             self.push_screen(ChoiceStep("Effort do escritor" if screen.role == "writer" else "Effort do revisor",
@@ -368,6 +367,30 @@ class HarnessApp(App[WizardState]):
             else:
                 self.state.reviewer = None
                 self.show_providers("reviewer")
+
+    @work(exclusive=True,group="models",exit_on_error=False)
+    async def load_models(self,screen,provider):
+        menu=screen.query_one(OptionList);menu.disabled=True
+        screen.error("")
+        screen.query_one("#hint",Static).update("Consultando modelos e variantes do OpenCode…")
+        try:
+            await self.catalog.discover_models(provider,self.state.project_dir)
+            if screen.is_current:self.show_models(screen,provider)
+        except Exception as exc:
+            if screen.is_mounted:screen.error(str(exc))
+        finally:
+            if screen.is_mounted:
+                menu.disabled=False
+                if screen.is_current:menu.focus()
+
+    def show_models(self,screen,provider):
+        models=self.catalog.models.get(provider,())
+        if not models:
+            screen.error("Nenhum modelo habilitado retornado pelo CLI.");return
+        self.push_screen(ChoiceStep("Modelo do escritor" if screen.role=="writer" else "Modelo do revisor",
+            f"{PROVIDERS[provider]} · {self.catalog.sources[provider]}",screen.section,"model",
+            [(m.id,m.name if m.id=="default" else f"{m.name}  ·  {m.id}",False) for m in models],
+            provider=provider,role=screen.role))
 
     def show_reuse(self):
         self.push_screen(ChoiceStep("Usar o mesmo modelo do escritor como revisor?",

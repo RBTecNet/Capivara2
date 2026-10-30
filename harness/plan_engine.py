@@ -12,12 +12,13 @@ from .plan_corrections import CorrectionBook
 from .plan_schema import scoped_schema
 from .plan_contracts import (PlanContractError, WorkClassification, ClassificationReview,
     TaskAssessment, CollectiveAssessment, StructureRepair, ContentCorrection, ContractValidation,
-    SealedOutline)
+    SealedOutline, correction_id)
 from .plan_coverage import (build_requirements, check_assignments, check_seed,
                             coverage_map, delegate_validations)
 from .plan_instructions import instructions_for
 from .plan_models import (FinalPlan, PlannedPhase, PlanRepair, PlanReview, TaskContent, agent_schema)
 from .run_events import InitEvent, PlanItem
+from .recovery import OperationJournal, fingerprint
 
 
 class PlanEngine:
@@ -50,6 +51,9 @@ class PlanEngine:
         self.current_task_id = None
         self.structure_requests = set()
         self.applied_structures = set()
+        self.journal=None
+        self.legacy_responses={}
+        self.last_operation_key=None
 
     def item_state(self, item_id, **states):
         self.item_states.setdefault(item_id, {}).update(states)
@@ -86,18 +90,54 @@ class PlanEngine:
     def announce(self, stage, message):
         self.stage = stage
         if stage == "revision_requested":
-            self.corrections += 1
+            self.corrections = self.journal.count('corrections',self.last_operation_key) if self.journal else self.corrections+1
         self.store.event(stage, message, phase=self.phase_number, round=self.round)
         self.emit("stage_changed")
 
     async def call(self, role, task, data, model, check=None, *, max_attempts=2):
-        self.operations += 1
         feedback = ""
         rejected_response = None
         selection = self.state.reviewer if role == "reviewer" else self.state.writer
         schema = scoped_schema(model, task, data, self.requirements)
+        key=self.journal.key(role,task,data,schema)
+        self.last_operation_key=key
+        record=self.journal.read(key)
+        value=self.journal.cached(key,model)
+        if value is not None:
+            if check:check(value)
+            return value
+        if not record:
+            legacy_key=fingerprint((role,task,data))
+            for path in self.legacy_responses.get(legacy_key,[]):
+                try:
+                    text=path.read_text().strip()
+                    if text.startswith('```') and text.endswith('```'):text='\n'.join(text.splitlines()[1:-1])
+                    candidate=model.model_validate_json(text)
+                    if isinstance(candidate,ContractValidation) and not candidate.approved:continue
+                    if isinstance(candidate,ClassificationReview) and candidate.status=='conflict':continue
+                    if check:check(candidate)
+                except ValueError:continue
+                self.journal.start(key,role=role,operation=task,data=data)
+                self.operations=self.journal.metrics().get('operations',0)
+                self.journal.finish(key,candidate)
+                return candidate
+        # Recuperar uma resposta gravada antes de a energia cair no recibo de conclusão.
+        response=record.get('response')
+        if response and self.store.path(response).is_file():
+            try:
+                candidate=model.model_validate_json(self.store.path(response).read_text())
+                if check:check(candidate)
+                if ((not isinstance(candidate,ContractValidation) or candidate.approved)
+                        and (not isinstance(candidate,ClassificationReview) or candidate.status!='conflict')):
+                    self.journal.finish(key,candidate)
+                    return candidate
+            except ValueError:pass
+        feedback=record.get('error','')
         for attempt in range(max_attempts):
-            self.call_id += 1
+            self.call_id=self.journal.next_call()
+            response_path=f"log/{role}-{self.call_id:04d}.response.txt"
+            self.journal.start(key,role=role,operation=task,data=data,response=response_path)
+            self.operations=self.journal.metrics().get('operations',0)
             # Nenhum histórico é reutilizado, nem em correções de formato.
             envelope = {"preserved_context": [], "context_policy": "fresh",
                         "current_request": {"task": task, "data": data}, "format_correction": feedback,
@@ -112,10 +152,12 @@ class PlanEngine:
             except asyncio.CancelledError:
                 self.active_role = None
                 self.emit("agent_cancelled")
+                self.journal.failed(key,"Operação interrompida antes da conclusão.")
                 raise
-            except Exception:
+            except Exception as exc:
                 self.active_role = None
                 self.emit("agent_failed")
+                self.journal.failed(key,exc)
                 raise
             self.active_role = None
             self.emit("agent_finished")
@@ -127,13 +169,19 @@ class PlanEngine:
                 value = model.model_validate_json(text)
                 if check:
                     check(value)
+                if isinstance(value,ContractValidation) and not value.approved:
+                    self.journal.failed(key,value.reason)
+                elif isinstance(value,ClassificationReview) and value.status=='conflict':
+                    self.journal.failed(key,value.summary)
+                else:self.journal.finish(key,value)
                 return value
             except PlanContractError:
                 raise
             except ValueError as exc:
                 feedback = str(exc)
+                self.journal.failed(key,exc)
                 rejected_response = output
-                self.contract_errors += 1
+                self.contract_errors = self.journal.count('contract_errors')
                 self.store.event("format_correction", "Contrato documental devolvido ao agente.",
                                  role=role, call=self.call_id, detail=feedback)
                 self.emit("format_correction")
@@ -313,26 +361,37 @@ class PlanEngine:
                 "rejected_contract": spec.model_dump(), "reason": validation.reason}, ContentCorrection,
                 lambda c: self.correction_book.check(task, c, self.requirements))
             target = self.correction_book.check(task, spec, self.requirements)
-        identifier, target = self.correction_book.issue(task, spec, self.requirements)
-        self.checkpoint()
-        self.announce("correcting_task", f"Escritor aplicando o contrato {identifier} de {task.id}, em um ciclo.")
-        self.item_state(task.id, creation="running", validation="rejected")
-        recovered = False
-        try:
-            candidate = await self.call("writer", "correct_task", {**context, "task_id": task.id,
-                "seed": task.seed.model_dump(), "previous_task": task.content.model_dump(),
-                "contract_id": identifier, "correction": spec.model_dump()}, TaskContent, max_attempts=1)
-            recovered = candidate != target
-        except PlanContractError:
-            recovered = True
-        # A correção autorizada é um patch exato. Desvios do escritor não geram nova tentativa.
-        task.content = target
-        self.correction_book.applied(identifier, task, recovered)
-        if recovered:
-            self.writer_recoveries += 1
-            self.store.event("writer_contract_recovery", "Substituições aprovadas aplicadas exatamente após desvio do escritor.",
-                             task_id=task.id, contract_id=identifier)
-            self.emit("writer_recovered")
+        transaction_path=f"control/applied-corrections/{correction_id(spec)}.json"
+        transaction=self.store.read_json(transaction_path)
+        identifier,target=self.correction_book.issue(task,spec,self.requirements)
+        if transaction and transaction.get('base_version')==version(task):
+            if transaction.get('target')!=target.model_dump():raise PlanContractError('A transação de correção salva foi alterada.')
+            task.content=target
+            recovered=transaction.get('recovered',transaction.get('status')=='issued')
+            self.correction_book.applied(identifier,task,recovered)
+            if recovered:self.writer_recoveries+=1
+        else:
+            self.store.json(transaction_path,{'status':'issued','base_version':spec.base_version,'target':target.model_dump()})
+            self.checkpoint()
+            self.announce("correcting_task", f"Escritor aplicando o contrato {identifier} de {task.id}, em um ciclo.")
+            self.item_state(task.id, creation="running", validation="rejected")
+            recovered = False
+            try:
+                candidate = await self.call("writer", "correct_task", {**context, "task_id": task.id,
+                    "seed": task.seed.model_dump(), "previous_task": task.content.model_dump(),
+                    "contract_id": identifier, "correction": spec.model_dump()}, TaskContent, max_attempts=1)
+                recovered = candidate != target
+            except PlanContractError:
+                recovered = True
+            # A correção autorizada é um patch exato. Desvios do escritor não geram nova tentativa.
+            task.content = target
+            self.correction_book.applied(identifier, task, recovered)
+            if recovered:
+                self.writer_recoveries += 1
+                self.store.event("writer_contract_recovery", "Substituições aprovadas aplicadas exatamente após desvio do escritor.",
+                                 task_id=task.id, contract_id=identifier)
+                self.emit("writer_recovered")
+            self.store.json(transaction_path,{'status':'applied','base_version':spec.base_version,'target':target.model_dump(),'recovered':recovered})
         self.created_tasks.add(task.id)
         self.store.json(f"phases/{phase.number:02d}/tasks/{task.id}.json", task.model_dump())
         self.item_state(task.id, creation="completed", validation="waiting")
@@ -471,12 +530,53 @@ class PlanEngine:
             self.announce("revision_requested", f"Revisor devolveu recortes da fase {number}.")
             self.apply(verdict)
 
+    def prepare_recovery(self):
+        self.journal=OperationJournal(self.store,self.source['source_prompt_sha256'])
+        metrics=self.journal.metrics()
+        self.operations=metrics.get('operations',0);self.contract_errors=metrics.get('contract_errors',0);self.corrections=metrics.get('corrections',0)
+        contexts=sorted(self.store.path('context').glob('call-*.json'),reverse=True)
+        self.call_id=max((int(p.stem.removeprefix('call-')) for p in contexts if p.stem.removeprefix('call-').isdigit()),default=0)
+        for path in contexts:
+            try:request=json.loads(path.read_text())['current_request']
+            except (OSError,ValueError,KeyError):continue
+            for role in ('writer','reviewer'):
+                response=self.store.path(f"log/{role}-{path.stem.removeprefix('call-')}.response.txt")
+                if response.is_file():
+                    key=fingerprint((role,request['task'],request['data']))
+                    self.legacy_responses.setdefault(key,[]).append(response)
+
+    def invalidate_failed_contract(self):
+        if not self.current_task_id:return
+        task=next((t for p in self.phases for t in p.tasks if t.id==self.current_task_id),None)
+        if not task:return
+        for path in self.store.path('control/operations').glob('*.json'):
+            record=json.loads(path.read_text());value=record.get('value',{});data=record.get('data',{})
+            if record.get('status')!='completed':continue
+            if record.get('operation')=='repair_correction' and data.get('task',{}).get('id')==task.id:
+                if data['task'].get('content')==task.content.model_dump():self.journal.abandon(record['key'],'Reabrir apenas o contrato que não chegou a ser aplicado.')
+            elif value.get('approved') is False:
+                if any(c.get('task_id')==task.id and (c.get('contract') or c).get('base_version')==version(task)
+                       for c in value.get('corrections',[])):
+                    self.journal.abandon(record['key'],'Revisão não resultou numa correção aplicada; pode ser refeita.')
+
     async def run(self):
         if not self.state.writer or not self.state.reviewer:
             raise InitError("Selecione escritor e revisor antes de executar o plan.")
         try:
             self.source = self.store.begin(self.state)
             self.prepare_origins()
+            self.prepare_recovery()
+            if self.store.already_completed:
+                final=FinalPlan.model_validate(self.store.read_json('final.json'))
+                self.phases=final.phases
+                self.approved_phases={p.number for p in self.phases}
+                self.approved_tasks={t.id for p in self.phases for t in p.tasks}
+                for p in self.phases:
+                    self.item_states[f'P{p.number}']={'creation':'completed','validation':'completed'}
+                    for t in p.tasks:self.item_states[t.id]={'creation':'completed','validation':'completed'}
+                self.last_role='reviewer'
+                self.stage='completed';self.emit('counts_changed')
+                return self.store.path('final.md')
             await self.classify()
             self.store.json("control/requirements.json", [r.model_dump() for r in self.requirements.values()])
             self.round = 1
@@ -566,6 +666,7 @@ class PlanEngine:
             raise
         except Exception as exc:
             if isinstance(exc, PlanContractError) and self.store.started:
+                self.invalidate_failed_contract()
                 self.store.json("control/contract-failure.json", {"operation": self.stage, "task_id": self.current_task_id,
                     "phase": self.phase_number, "call": self.call_id, "reason": str(exc),
                     "instruction": "Corrigir a incompatibilidade do contrato; nenhuma aprovação será inferida por tentativas."})
