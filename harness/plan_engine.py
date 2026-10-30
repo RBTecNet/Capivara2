@@ -395,8 +395,14 @@ class PlanEngine:
         spec = ContentCorrection.model_validate(correction.contract)
         target = self.correction_book.check(task, spec, self.requirements)
         context = self.task_context(phase, task)
-        transaction_path=f"control/applied-corrections/{self.correction_book.identifier(spec)}.json"
-        transaction=self.store.read_json(transaction_path)
+        def receipt(spec, target):
+            base=f"control/applied-corrections/{self.correction_book.identifier(spec)}"
+            path=base+'.json';saved=self.store.read_json(path)
+            if saved and (saved.get('base_version')!=spec.base_version or saved.get('target')!=target.model_dump()):
+                path=base+'-'+fingerprint({'base':spec.base_version,'target':target.model_dump()})[:16]+'.json'
+                saved=self.store.read_json(path)
+            return path,saved
+        transaction_path,transaction=receipt(spec,target)
         # O recibo issued só é gravado após aprovação explícita do contrato.
         confirmed = bool(transaction and transaction.get('status') in ('issued', 'applied')
                          and transaction.get('base_version') == version(task)
@@ -416,8 +422,7 @@ class PlanEngine:
                 **({'review_cycle':cycle} if cycle > 1 else {})}, ContentCorrection,
                 lambda c: self.correction_book.check(task, c, self.requirements))
             target = self.correction_book.check(task, spec, self.requirements)
-        transaction_path=f"control/applied-corrections/{self.correction_book.identifier(spec)}.json"
-        transaction=self.store.read_json(transaction_path)
+        transaction_path,transaction=receipt(spec,target)
         identifier,target=self.correction_book.issue(task,spec,self.requirements)
         if transaction and transaction.get('base_version')==version(task):
             if transaction.get('target')!=target.model_dump():raise PlanContractError('A transação de correção salva foi alterada.')

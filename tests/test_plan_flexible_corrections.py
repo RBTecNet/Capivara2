@@ -7,7 +7,7 @@ from unittest.mock import patch as mock_patch
 
 from harness.plan_acceptance import effective_conditions
 from harness.plan_adapter import normalize_review
-from harness.plan_contracts import TaskAssessment, ContentCorrection
+from harness.plan_contracts import TaskAssessment, ContentCorrection, correction_id
 from harness.plan_corrections import CorrectionBook
 from harness.plan_control import version
 from harness.plan_engine import PlanEngine
@@ -78,6 +78,24 @@ class FlexibleCorrectionsTests(unittest.TestCase):
 
 class FlexibleCorrectionIntegrationTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp=test_plan.PlanTests.asyncSetUp
+
+    async def test_different_saved_target_with_same_legacy_id_is_preserved(self):
+        class Collision(PlanAgents):
+            old_path=None;old_bytes=None
+            async def generate(inner,*args,**kwargs):
+                output=await super().generate(*args,**kwargs)
+                request=inner.calls[-1][1]['current_request'];data=request['data']
+                if request['task']=='validate_correction' and inner.old_path is None:
+                    spec=ContentCorrection.model_validate(data['contract']);store=args[4]
+                    relative=f'control/applied-corrections/{correction_id(spec)}.json'
+                    target={**data['expected_content'],'title':'Outro ajuste aprovado anteriormente.'}
+                    store.json(relative,{'status':'applied','base_version':spec.base_version,'target':target})
+                    inner.old_path=store.path(relative);inner.old_bytes=inner.old_path.read_bytes()
+                return output
+        agents=Collision();agents.task_reviews=[rejected('P0-T001')]
+        await PlanEngine(self.state,agents).run()
+        self.assertEqual(agents.old_path.read_bytes(),agents.old_bytes)
+        self.assertGreaterEqual(len(list(agents.old_path.parent.glob(agents.old_path.stem+'*.json'))),2)
 
     async def test_resume_reuses_approved_versions_when_only_acceptance_representation_changes(self):
         previous_context=CorrectionBook.context
