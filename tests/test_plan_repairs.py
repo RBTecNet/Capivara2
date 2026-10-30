@@ -211,3 +211,23 @@ class PlanRepairTests(unittest.IsolatedAsyncioTestCase):
         task_seed.source_quotes = ['Uma stack inventada sem referência.']
         with self.assertRaisesRegex(ValueError, 'Citação ausente'):
             check_seed(task_seed, 0, engine.origins[0]['text'], engine.requirements)
+
+    async def test_global_source_quote_is_context_without_changing_task_ownership(self):
+        engine,_=self.control()
+        global_requirement=next(r for r in engine.requirements.values() if r.phase_number==-1)
+        task_seed=TaskSeed.model_validate(seed('Definir o esquema de tarefas.','esquema'))
+        task_seed.source_quotes.append(global_requirement.text)
+        task_seed.source_quotes.append(engine.requirements['P0-S001'].text)
+        check_seed(task_seed,1,engine.origins[1]['text'],engine.requirements)
+        self.assertEqual([c.requirement_id for c in task_seed.coverage],['P1-A001'])
+        task_seed.coverage[0].requirement_id=global_requirement.id
+        task_seed.coverage[0].excerpt=global_requirement.text
+        with self.assertRaisesRegex(ValueError,'Coverage'):
+            check_seed(task_seed,1,engine.origins[1]['text'],engine.requirements)
+
+    async def test_source_quote_from_another_phase_still_requires_current_source_context(self):
+        engine,_=self.control()
+        task_seed=TaskSeed.model_validate(seed('Definir o esquema de tarefas.','esquema'))
+        task_seed.source_quotes.append(engine.requirements['P2-A001'].text)
+        with self.assertRaisesRegex(ValueError,'Citação ausente'):
+            check_seed(task_seed,1,engine.origins[1]['text'],engine.requirements)

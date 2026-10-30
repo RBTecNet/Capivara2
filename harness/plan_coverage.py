@@ -40,11 +40,14 @@ def check_seed(seed, number, origin, requirements):
     if number == 0 and len({c.requirement_id for c in seed.coverage}) > 3:
         raise ValueError('Fase 0: divida o catálogo em seeds pequenos, com no máximo três IDs de stack/ferramentas por task. '
                          'Não agrupe toda a stack e todas as ferramentas numa unidade.')
-    texts = [origin, *(r.text for r in requirements.values() if r.phase_number == number)]
+    # Requisitos globais e stack/ferramentas são contexto fornecido e origem válida.
+    # Isso não muda coverage: a responsabilidade continua limitada aos IDs desta fase.
+    texts = [origin, *(r.text for r in requirements.values()
+                      if r.phase_number in (number, -1) or r.kind in ('technology','tool'))]
     invalid = [quote for quote in seed.source_quotes if not quote.strip() or not any(quote in text for text in texts)]
     if invalid:
-        raise ValueError('Citação ausente da fase e dos requisitos canônicos: ' + repr(invalid[0][:180]) +
-                         '. Copie um trecho literal de requirements[].text ou phase_source.text, sem concatenar frases.')
+        raise ValueError('Citação ausente das origens fornecidas (fase, requisitos globais e stack/ferramentas): ' + repr(invalid[0][:180]) +
+                         '. Use um trecho da origem fornecida, sem inventar ou concatenar frases.')
     if not seed.coverage:
         raise ValueError('Cada seed precisa de coverage com requirement_id e excerpt literal da responsabilidade atribuída.')
     for claim in seed.coverage:

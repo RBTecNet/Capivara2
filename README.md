@@ -139,7 +139,9 @@ aprovação do init e preserva a ordem, as dependências e a identidade de suas 
 A **fase 0 — Stack de implantação e dependências de desenvolvimento e testes**
 documenta as escolhas já aprovadas. As demais fases são divididas em tasks pequenas,
 com IDs estáveis, objetivo delimitado, passos de implementação, entregáveis e
-referências literais da fase de origem.
+referências literais da fase e do contexto global aprovado. Citações de requisitos
+globais, stack e ferramentas não ampliam a responsabilidade da task; seus IDs de
+cobertura continuam limitados ao recorte atribuído na fase.
 
 Antes da redação, o revisor classifica semanticamente as atividades do init em
 implementação, documentação e responsabilidades do build. Itens mistos são divididos em

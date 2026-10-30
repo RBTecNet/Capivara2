@@ -78,6 +78,9 @@
   roteiros ou limites a testes, inclusive os não citados. Validação funcional de campos e
   preparação da infraestrutura continuam nas tasks. A fase 0 somente cataloga
   tecnologias e ferramentas; suas finalidades não são ordens de executar testes.
+- Citações podem usar o contexto global aprovado, incluindo requisitos do produto,
+  stack e ferramentas fornecidos ao agente. Isso não amplia coverage: os IDs de
+  responsabilidade continuam limitados à fase e ao recorte da própria task.
 - Tasks declaram responsabilidades por IDs e recortes literais dos requisitos.
   Revisar cada task apenas em seu escopo. A consolidação local confere as atribuições
   já definidas, sem outro agente ou diagnóstico global de cobertura.
