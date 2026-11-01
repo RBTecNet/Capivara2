@@ -11,6 +11,7 @@ from urllib.parse import unquote, urlsplit
 INIT_FILES = {
     "prompt-original.txt", "entrevista.txt", "resposta.txt", "prompt-final.md",
     "g0-init.txt", "erro-init.txt", "init-concluido.json",
+    "init-estado.json", "init",
 }
 PLAN_FILES = {
     "plano.md", "plano-original.md", "plano-original-anterior.md",

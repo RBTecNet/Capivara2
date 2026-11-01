@@ -1,7 +1,6 @@
 """Migração do ciclo de init.sh: entrevista, PRD separado e somente G0 INIT."""
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import Awaitable, Callable
 
 from capivara2ptn.prompt_files import load_prompt
 from capivara2ptn.providers import CliRunner, ProviderError
+from capivara2ptn.init_resume import InitSession, RUN_FILES, load_correction_prompt
 from capivara2ptn.workspace import data_directory, migrate_legacy, ensure_project_destination, ensure_harness
 
 
@@ -62,43 +62,25 @@ def g0_decision(response: str) -> tuple[bool, str]:
 
 
 class RunFiles:
-    NAMES = ("prompt-original.txt", "entrevista.txt", "resposta.txt", "prompt-final.md", "g0-init.txt", "erro-init.txt")
+    NAMES = RUN_FILES
 
     def __init__(self, cwd: Path) -> None:
         self.cwd = cwd.resolve()
         self.directory = data_directory(self.cwd)
-        self._owned: set[str] = set()
+        self.session = InitSession(self.cwd, InitError, parse_question, g0_decision)
+        self._owned = self.session.owned
 
     def begin(self, original: str) -> None:
         migrate_legacy(self.cwd)
         ensure_project_destination(self.cwd)
         ensure_harness(self.cwd)
-        if self.directory.is_symlink() or any((self.directory / name).exists() or (self.directory / name).is_symlink() for name in self.NAMES):
-            raise InitError("Já existem arquivos do INIT em .harness/dados/ ou o diretório é um link. Nada foi sobrescrito; use outro diretório ou preserve/mova os arquivos anteriores.")
-        try:
-            self.directory.mkdir(mode=0o700, exist_ok=True)
-        except OSError:
-            raise InitError("Não foi possível criar .harness/dados/ no diretório de trabalho.") from None
-        self.write("prompt-original.txt", original)
-        self.write("entrevista.txt", "")
-        self.write("resposta.txt", "")
+        self.session.begin(original)
 
     def write(self, name: str, text: str, append: bool = False) -> None:
-        if name not in self.NAMES:
-            raise InitError("Arquivo de execução não reconhecido.")
-        flags = os.O_WRONLY | os.O_NOFOLLOW
-        flags |= (os.O_APPEND if append else os.O_TRUNC) if name in self._owned else os.O_CREAT | os.O_EXCL
-        try:
-            descriptor = os.open(self.directory / name, flags, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write(text)
-                stream.flush()
-            self._owned.add(name)
-        except OSError:
-            raise InitError(f"Não foi possível salvar .harness/dados/{name}. Os arquivos anteriores foram preservados.") from None
+        self.session.write(name, text, append)
 
     def history(self) -> str:
-        return (self.directory / "entrevista.txt").read_text(encoding="utf-8")
+        return self.session.text("entrevista.txt") or ""
 
     @property
     def started(self) -> bool:
@@ -116,46 +98,69 @@ async def run_init(
     auditor: CliRunner | None = None,
 ) -> Path:
     files.begin(original)
+    session = files.session
 
     def data() -> dict[str, str]:
         return {"pedido_original": original, "historico_entrevista": files.history()}
 
     async def call(prompt: str, payload: dict[str, str], output: str, executor: CliRunner | None = None) -> str:
-        instructions = load_prompt(prompt)  # Leitura nova, inclusive a cada rodada.
+        session.check()
+        instructions = load_correction_prompt() if prompt == "init-correction.md" else load_prompt(prompt)
         try:
             response = await (executor or runner).invoke(instructions, payload)
         except ProviderError as error:
             if error.partial:
-                files.write(output, error.partial)
+                session.partial(output, error.partial)
             raise
         files.write(output, response)
         return response
 
-    question_number = 0
-    while True:
-        stage("Entrevista", "Consultando o modelo com o pedido original e o histórico completo.")
-        response = await call("init.md", data(), "resposta.txt")
-        question = parse_question(response)
-        if question is None:
-            stage("Entrevista concluída", "O modelo respondeu CONCLUIDO. Gerando o PRD em uma chamada separada.")
-            break
-        question_number += 1
-        stage("Aguardando resposta", f"Pergunta {question_number} da entrevista.")
+    if session.resuming:
+        stage("Entrevista concluída" if session.state["interview_complete"] else "Entrevista",
+              "Retomando INIT com o pedido salvo e as respostas já confirmadas; nenhuma etapa concluída será repetida.")
+    while not session.state["interview_complete"]:
+        pending = session.state["question"]
+        if pending is None:
+            stage("Entrevista", "Consultando o modelo com o pedido original e o histórico completo.")
+            response = await call("init.md", data(), "resposta.txt")
+            question = session.accept_interview_response(response)
+            if question is None:
+                stage("Entrevista concluída", "O modelo respondeu CONCLUIDO. Gerando o PRD em uma chamada separada.")
+                break
+        else:
+            question = Question(pending["text"], tuple(pending["choices"]))
+        stage("Aguardando resposta", f"Pergunta {session.state['questions_answered'] + 1} da entrevista.")
         answer = await ask(question)
         if answer is None:
             raise InitCancelled("Entrevista cancelada. Pedido original e histórico já confirmado foram preservados em .harness/dados/.")
-        files.write("entrevista.txt", f"Pergunta: {question.transcript()}\nResposta: {answer}\n\n", append=True)
+        session.answer(question, answer)
 
-    stage("Gerando PRD", "Produzindo a especificação final a partir do pedido e da entrevista.")
-    prd = await call("init-final.md", data(), "prompt-final.md")
+    if session.state["phase"] == "correcting":
+        stage("Gerando PRD", "Retomando a correção do PRD a partir dos motivos da reprovação do G0; entrevista preservada.")
+        prd = await call("init-correction.md", {**data(), "prd_anterior": session.text("prompt-final.md"),
+                         "reprovacao_g0": session.state["g0_issues"]}, "prompt-final.md")
+    elif session.state["phase"] == "writing":
+        stage("Gerando PRD", "Produzindo a especificação final a partir do pedido e da entrevista.")
+        prd = await call("init-final.md", data(), "prompt-final.md")
+    else:
+        prd = session.text("prompt-final.md")
+        if not prd or not prd.strip():
+            raise InitError("O PRD confirmado está ausente. Resultados anteriores preservados.")
     if not gates_enabled:
+        session.complete()
         stage("Concluído", "INIT concluído. Gates desabilitados: G0 INIT não foi executado. PRD salvo em .harness/dados/prompt-final.md.")
         return files.directory / "prompt-final.md"
+    if session.state["phase"] == "done" and session.state["g0_status"] == "approved":
+        session.complete()
+        stage("Concluído", "INIT retomado após G0 já aprovado; resultado e histórico preservados.")
+        return files.directory / "prompt-final.md"
+    session.transition(phase="reviewing")
     stage("Avaliando G0", "Validando somente a fidelidade do PRD, em chamada independente e somente leitura.")
     # As instruções vêm exclusivamente do Markdown; o conteúdo é enviado como dados.
     response = await call("gates/g0-init.md", {**data(), "prd_final": prd}, "g0-init.txt", auditor)
     approved, issues = g0_decision(response)
     if not approved:
         raise InitError("G0 REPROVADO\n" + issues + "\n\nArquivos preservados em .harness/dados/; INIT não concluído.")
+    session.complete()
     stage("Concluído", "G0 APROVADO. PRD final salvo em .harness/dados/prompt-final.md.")
     return files.directory / "prompt-final.md"

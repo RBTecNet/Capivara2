@@ -50,6 +50,9 @@ from capivara2ptn.plan_panel import PlanPanel
 from capivara2ptn.plan_state import PlanError, counts, load_plan_state, read_init_prd, record_init_completion
 from capivara2ptn.workspace import WorkspaceError, data_directory, reset_stage
 from capivara2ptn.build_flow import BuildError, BuildStore, read_build_input, run_build
+from capivara2ptn.reverse_ui import ReverseController, ReverseControls, ReversePanel
+from capivara2ptn.init_resume import pending_init_path
+from capivara2ptn.init_resume_ui import restore_pending_init, refresh_init_resume_button
 
 LogKind = Literal["sistema", "executor", "sucesso", "erro"]
 MANUAL_MODEL = object()  # Ação da interface; nunca é um ID de modelo.
@@ -98,6 +101,7 @@ class CapivaraApp(App[None]):
         self._auditor_manual = False
         self._clock: ModuleClock | None = None
         self._clock_error_reported = False
+        self.reverse = ReverseController(self)
         # Recursos vêm da instalação; nunca dependem do cwd do usuário.
         with files("capivara2ptn").joinpath("assets/mascote.png").open("rb") as stream:
             with PillowImage.open(stream) as image:
@@ -120,6 +124,7 @@ class CapivaraApp(App[None]):
                         yield RadioButton("INIT", value=True, id="module-init")
                         yield RadioButton("PLAN", id="module-plan")
                         yield RadioButton("BUILD", disabled=True, id="module-build")
+                        yield RadioButton("REVERSE", id="module-reverse")
                     yield Label("Provedor · escritor", classes="field-label")
                     yield Select(
                         PROVIDERS,
@@ -150,6 +155,7 @@ class CapivaraApp(App[None]):
                         yield Switch(value=False, id="forbid-tests", classes="execution-option")
                         yield Label("Proibir testes automatizados", classes="option-label")
                     yield PromptSource(self.working_directory)
+                    yield ReverseControls()
                     yield Static("INIT · entrevista, PRD e G0", classes="muted", id="scope")
                     yield Button("Iniciar", variant="primary", id="start")
 
@@ -165,6 +171,7 @@ class CapivaraApp(App[None]):
                             yield Static("Nenhum planejamento iniciado.", id="plan-count")
                         yield Static("Aguardando início do INIT.", id="stage", classes="muted", markup=False)
                     yield PlanPanel(id="plan-panel", classes="card")
+                    yield ReversePanel()
                     with Vertical(id="log-card", classes="card"):
                         yield Static(
                             "[cyan]Sistema[/]  [magenta]Executor[/]  [green]Sucesso[/]  [red]Erro[/]",
@@ -216,9 +223,13 @@ class CapivaraApp(App[None]):
         self.call_after_refresh(self.query_one("#configuration").scroll_home, animate=False)
         self.select_provider(str(self.query_one("#provider", Select).value))
         self.restore_project_phase()
+        self.reverse.mount()
         self.set_interval(1, self.update_elapsed)
 
     def update_elapsed(self, *, checkpoint: bool = True) -> None:
+        if self.reverse.selected():
+            self.reverse.tick()
+            return
         button = self.query_one("#module", RadioSet).pressed_button
         if button is None:
             return
@@ -302,6 +313,7 @@ class CapivaraApp(App[None]):
                 manual.load_text(original.read_text(encoding="utf-8"))
         except (PlanError, WorkspaceError, OSError, ValueError):
             pass
+        restore_pending_init(self)
         build = self.query_one("#module-build", RadioButton)
         build.disabled = not self.plan_completed()
         target = "build" if self.plan_completed() else ("plan" if self._init_saved else "init")
@@ -536,6 +548,9 @@ class CapivaraApp(App[None]):
                 self.start_pressed()
 
     def apply_module_view(self, button: RadioButton) -> None:
+        self.reverse.show(button.id == "module-reverse")
+        if button.id == "module-reverse":
+            return
         planning = button.id in ("module-plan", "module-build")
         self.set_class(planning, "planning")
         self.query_one("#progress-module", Static).update(f"Módulo: {button.label}")
@@ -547,6 +562,7 @@ class CapivaraApp(App[None]):
         start = self.query_one("#start", Button)
         start.disabled = (module == "build" and not self.plan_completed()) or bool(self._workspace_error)
         start.label = f"Refazer {module.upper()}" if self.module_completed(module) else "Iniciar"
+        refresh_init_resume_button(self)
         self.call_after_refresh(self.fit_plan_monitor)
         if module == "build" and not self._build_running:
             self.update_build_panel(self._build_state)
@@ -619,6 +635,9 @@ class CapivaraApp(App[None]):
 
     @on(Button.Pressed, "#start")
     def start_pressed(self) -> None:
+        if self.reverse.selected():
+            self.reverse.start()
+            return
         if self._init_running or self._plan_running or self._build_running:
             return
         if self._workspace_error:
@@ -686,7 +705,11 @@ class CapivaraApp(App[None]):
             runner, auditor = self.execution_runners(selection, options)
             self.init_stage("Preparando", "Lendo o pedido original da origem selecionada.")
             origin = str(self.query_one("#prompt-source", Select).value)
-            if origin == "manual":
+            pending_original = pending_init_path(self.working_directory) if self._restart_requested != "init" else None
+            if pending_original is not None:
+                original = (await asyncio.to_thread(pending_original.read_bytes)).decode("utf-8")
+                self.write_log("sistema", "Retomando o pedido original salvo em .harness/dados/prompt-original.txt.")
+            elif origin == "manual":
                 original = self.query_one("#manual-prompt", TextArea).text
             elif origin == "file":
                 path = source.file_path
@@ -765,6 +788,7 @@ class CapivaraApp(App[None]):
             self._init_running = False
             if self.is_running:
                 configuration.disabled = False
+                refresh_init_resume_button(self)
 
     def action_preview_interview(self) -> None:
         if self._init_running or self._plan_running or self._build_running:

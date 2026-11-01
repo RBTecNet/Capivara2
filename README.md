@@ -93,12 +93,13 @@ chamada independente, em modo de leitura, executa apenas G0 INIT. O validador re
 pedido original, histórico e PRD como dados separados das instruções Markdown.
 A aprovação exige somente `G0 APROVADO`. A reprovação exige `G0 REPROVADO` e
 justificativa. Texto contraditório, ausência de decisão ou falha da CLI nunca
-aprovam o INIT. Não há correção automática, nova tentativa ou outro gate.
+aprovam o INIT. Uma reprovação interrompe a execução; a retomada explícita pode
+corrigir o PRD com os motivos do G0 e submetê-lo novamente ao mesmo validador.
 
 Quando aprovado, ou ao concluir o PRD com gates desabilitados, a TUI exibe
 sucesso e oferece selecionar PLAN, preservando
 provedor, modelo e effort. Aceitar apenas muda a seleção: PLAN não é executado.
-Reprovação ou falha interrompe o INIT e não oferece continuação. A conclusão
+Reprovação ou falha interrompe o INIT e preserva a etapa para **Retomar INIT**. A conclusão
 também registra o hash do PRD em `.harness/dados/init-concluido.json`, para reconhecer o
 resultado após reiniciar, sem alterar a entrevista ou o PRD.
 
@@ -112,10 +113,25 @@ Os arquivos seguem os nomes do Bash, dentro do cwd capturado na abertura:
 .harness/dados/g0-init.txt           resposta original do G0
 .harness/dados/init-concluido.json   conclusão persistida e hash do PRD
 .harness/dados/erro-init.txt         motivo de falha/cancelamento, quando houver
+.harness/dados/init-estado.json      etapa, pergunta pendente e hashes dos checkpoints
+.harness/dados/init/historico/       versões anteriores de PRD, G0 e erros
+.harness/dados/init/parciais/        saídas incompletas de chamadas que falharam
 ```
 
 Um INIT concluído pode ser refeito após o aviso e a confirmação descritos abaixo.
-Um INIT incompleto continua preservado para inspeção, sem retomada da entrevista. O código-fonte e a instalação da CAPIVARA2PTN são recusados
+Um INIT incompleto oferece **Retomar INIT**. A TUI usa o pedido original salvo,
+sem exigir o arquivo externo ou nova consulta MCP. Perguntas ainda sem resposta são
+reabertas; respostas confirmadas e a conclusão da entrevista são reaproveitadas.
+Se o PRD não terminou, somente a redação é refeita. Se a falha foi na conexão com o G0,
+somente a avaliação é repetida. Se houve G0 reprovado, o escritor recebe o PRD anterior
+e os motivos concretos para corrigi-lo antes de nova avaliação, sem repetir a entrevista.
+Nenhuma dessas operações começa automaticamente ao abrir o projeto.
+
+A retomada também reconhece os arquivos de execuções anteriores aos checkpoints.
+Artefatos ambíguos ou alterados externamente são preservados e geram uma mensagem;
+não são aprovados silenciosamente. Interrupções durante a gravação recuperam a
+última transação sem duplicar respostas. Saídas parciais não substituem um PRD válido.
+O código-fonte e a instalação da CAPIVARA2PTN são recusados
 como destino de arquivos de projeto. Ctrl+Q encerra a TUI e interrompe a CLI.
 
 ### Arquivos ocultos e módulo inicial
@@ -213,9 +229,8 @@ Refazer INIT zera seus tempos e os de PLAN/BUILD, cujos resultados são excluíd
 refazer PLAN preserva INIT e zera PLAN/BUILD; refazer BUILD zera somente BUILD.
 A confirmação isolada não zera nada: a exclusão/reset ocorre ao iniciar.
 Execuções antigas sem tempo registrado mostram `--:--:--`, sem duração inventada.
-O INIT conserva o fluxo anterior, sem nova retomada da entrevista; seu tempo
-interrompido permanece salvo. A retomada do trabalho continua disponível onde
-já existia, no PLAN e BUILD.
+Retomar INIT mantém seu tempo acumulado e acrescenta somente a nova execução,
+como nos módulos PLAN e BUILD. O reset continua reservado ao reinício confirmado.
 
 ### Prompts externos editáveis
 
@@ -239,7 +254,9 @@ as instruções globais editadas pelo usuário.
 Depois da primeira preparação, um arquivo removido não é recriado. Arquivo
 ausente, ilegível ou vazio interrompe a etapa. Em particular, G0 sem instruções
 nunca aprova automaticamente. Não há cópia das instruções de validação no Python.
-O caminho efetivamente usado aparece no log ao iniciar o INIT.
+O caminho efetivamente usado aparece no log ao iniciar o INIT. Na primeira
+retomada após G0 reprovado, o prompt adicional `init-correction.md` é instalado
+nessa mesma pasta, sem substituir os prompts existentes; também é editável.
 
 INIT utiliza `gates/g0-init.md`; PLAN utiliza `gates/g0-plan.md` a cada thread.
 BUILD usa `gates/g0-build.md`; seu escritor usa `BUILD.md` e G2 usa `G2.md`,
@@ -433,6 +450,13 @@ permissão/instalação bloqueada e retomar a mesma preparação. Os relatórios
 `task-N.M.environment-K.antes/instalacao/depois.json` e seus logs ficam em
 `.harness/dados/build/`, usando a persistência existente. Não há novo gate,
 auditor, banco ou sistema de descoberta de dependências; o PLAN é a autoridade.
+
+Os resultados reais da preparação (comandos, retornos, saídas e referências aos logs)
+acompanham as chamadas das tasks seguintes, inclusive quando a dependência é indireta.
+A origem desses resultados é identificada como o executor do harness no host.
+O ambiente isolado da CLI do modelo pode ter permissões diferentes: uma restrição
+nesse ambiente não demonstra, por si só, que a mesma verificação falhou no host.
+Falhas reais registradas pelo executor continuam bloqueando a produção.
 
 A task de documentação deve produzir README.md na raiz, com objetivo,
 pré-requisitos, instalação, comando exato de inicialização, uso, dados e

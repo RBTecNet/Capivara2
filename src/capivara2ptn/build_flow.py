@@ -14,6 +14,7 @@ from capivara2ptn.providers import ProviderError
 from capivara2ptn.workspace import data_directory, ensure_project_destination
 from capivara2ptn.technical_verification import configure_final_task, execute, finished
 from capivara2ptn.delivery import configure_delivery_tasks, host_context, readme_ready
+from capivara2ptn.build_environment import dependency_context, environment_context
 
 
 class BuildError(Exception):
@@ -169,13 +170,15 @@ async def run_build(store: BuildStore, runner, options, notify, *, auditor=None)
                     "fase_atual": {key: phase[key] for key in ("id", "title", "description")},
                     "task_atual": {key: task[key] for key in ("id", "title", "description", "dependencies")},
                     "preparacao_local": task["preparation"], "atualizacao_premissas": task.get("premises_update", ""),
-                    "dependencias": [{key: completed[identifier].get(key, "") for key in ("id", "title", "description", "writer_report")}
-                                     for identifier in task["dependencies"]],
+                    "dependencias": [dependency_context(completed[identifier]) for identifier in task["dependencies"]],
                     "gate_reprovado": task["feedback_gate"], "motivo_exato": task["last_rejection"],
                     "relato_anterior": task.get("writer_report", ""),
                     "resultado_g1": task.get("g1_result"),
                     "proibir_testes_automatizados": options.forbid_automated_tests,
                     "continuar_sobre_os_arquivos_reais_existentes": True}
+                environment = environment_context(completed)
+                if environment is not None:
+                    data["evidencias_ambiente_execucao"] = environment
                 if task.get("technical_check"):
                     data.update(verificacao_tecnica_final=task["technical_check"],
                                 resultado_verificacao_tecnica=task.get("technical_result"))

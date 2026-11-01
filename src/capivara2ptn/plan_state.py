@@ -61,6 +61,8 @@ def read_init_prd(cwd: Path) -> str:
             if data.get("version") != 1 or data.get("completed") is not True or data.get("prd_sha256") != digest(prd):
                 raise ValueError
         else:
+            if (directory / "init-estado.json").exists() or (directory / "init-estado.json").is_symlink():
+                raise ValueError
             # Compatibilidade com os INITs anteriores ao registro de conclusão.
             if (directory / "erro-init.txt").exists() or not (directory / "prompt-original.txt").read_text(encoding="utf-8").strip():
                 raise ValueError
