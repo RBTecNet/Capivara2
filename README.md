@@ -545,9 +545,11 @@ No BUILD, o mesmo adaptador usa o cwd e `$PWD` do projeto e permite ferramentas 
 com escrita e validadores/preparação em leitura. Codex usa `workspace-write`
 para implementar e `read-only` para validar, com shell e code-mode host ativos.
 Claude usa `acceptEdits` e ferramentas de arquivo/Bash para escrever, e somente
-Read/Glob/Grep para validar. Agy usa `auto` com permissões explícitas de
-read_file/write_file/command para escrever e `plan` sem escrita/comandos para
-validar. OpenCode usa os agentes nativos `build`/`plan`, permissões V2 por ação
+Read/Glob/Grep para validar. Agy usa `accept-edits`, `toolPermission=always-proceed` e
+`--dangerously-skip-permissions` somente no escritor do BUILD, mantendo as
+regras deny explícitas. Validadores/preparação de G0 usam `plan` e
+`toolPermission=request-review`, com leitura permitida e escrita/comandos
+negados. INIT/PLAN textuais continuam sem ferramentas. OpenCode usa os agentes nativos `build`/`plan`, permissões V2 por ação
 e ferramentas aninhadas com `execute`. Perguntas internas e subagentes ficam
 fora do fluxo. Erros de chamada no BUILD têm as novas tentativas descritas acima.
 
@@ -817,3 +819,14 @@ O fluxo completo foi conferido também na TUI com gates habilitados:
 preparação, produção, README e verificação final concluíram 4/4 tasks. A
 produção continuou condicionada à evidência real do ambiente e aos gates da
 task de preparação. O cronômetro e as bolinhas existentes foram preservados.
+
+Agy: o erro real de headless na task 1.2 mostrou que `auto` não estava disponível
+sem sandbox e que `strict` exigia confirmação de read_file mesmo com allow.
+O escritor do BUILD agora usa `accept-edits` com `--dangerously-skip-permissions`;
+a leitura dos auditores usa request-review/allow, sem liberar escrita ou comandos.
+As regras de negação de arquivos usam prefixos de diretório, inclusive .harness.
+Referência: [permissões oficiais do Agy](https://antigravity.google/docs/permissions).
+A correção foi conferida com Agy 1.4.12 e gemini-3.8-flash-high: leitura,
+escrita e comando concluíram sem prompts; leitura do auditor funcionou sem
+liberar escrita/comandos. Uma escrita direta em .harness foi negada mesmo
+com a flag ativa. Não foram criados testes automatizados.

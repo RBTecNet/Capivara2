@@ -92,13 +92,16 @@ def command(selection: Selection, access: str = "text", cwd: Path | None = None)
             if access == "write":
                 argv += ["--settings", json.dumps({"permissions": {"deny": ["Edit(./.harness/**)"]}})]
         elif selection.provider == "agy":
-            settings = {"toolPermission": "strict", "permissions": {
+            settings = {"toolPermission": "always-proceed" if access == "write" else "request-review", "permissions": {
                 "allow": ["read_file(*)"] + (["write_file(*)", "command(*)"] if access == "write" else []),
                 "deny": ["mcp(*)", "read_url(*)", "execute_url(*)"] +
-                        (["write_file(.harness/*)"] if access == "write" else ["write_file(*)", "command(*)"]),
+                        (["write_file(.harness/)", f"write_file({cwd / '.harness'}/)"] if access == "write" and cwd else
+                         ["write_file(.harness/)"] if access == "write" else ["write_file(*)", "command(*)"]),
             }}
-            argv[argv.index("--mode") + 1] = "auto" if access == "write" else "plan"
+            argv[argv.index("--mode") + 1] = "accept-edits" if access == "write" else "plan"
             argv[argv.index("--settings") + 1] = json.dumps(settings)
+            if access == "write":
+                argv += ["--dangerously-skip-permissions"]
         elif selection.provider == "opencode":
             argv[argv.index("--agent") + 1] = "build" if access == "write" else "plan"
             argv += ["--auto"]
