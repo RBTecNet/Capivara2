@@ -1,0 +1,117 @@
+Screen {
+    background: #101820;
+    color: #e2e8ef;
+}
+
+#header {
+    height: 6;
+    padding: 1 2;
+    background: #16222d;
+    align-vertical: middle;
+}
+
+#mascot { width: 10; height: 4; }
+#brand { width: 1fr; height: 4; padding-left: 2; align-vertical: middle; }
+#title { color: #f1d5a0; text-style: bold; height: 2; }
+#status { width: 12; height: 4; content-align: right middle; color: #93d6b4; }
+.muted { color: #92a5b8; height: auto; }
+#workspace { height: auto; max-height: 3; padding: 0 2; margin-top: 1; color: #92a5b8; }
+#body { height: 1fr; padding: 1 2; }
+#dashboard { height: 1fr; min-height: 28; }
+
+.card {
+    background: #16222d;
+    border: round #3c5264;
+    border-title-color: #f1d5a0;
+    border-title-style: bold;
+    padding: 0 1;
+}
+
+#configuration { width: 46; height: 1fr; margin-right: 1; overflow-y: auto; }
+.field-label { height: 1; color: #bbc9d6; }
+.option-row { height: 3; align-vertical: middle; }
+.option-row Switch { width: 8; }
+.option-label { width: 1fr; height: 3; content-align: left middle; margin-left: 1; }
+#module { layout: horizontal; height: 3; padding: 0; border: none; }
+#module RadioButton { width: auto; margin-right: 1; padding: 0; border: none; }
+#module-build:disabled { opacity: 45%; }
+#auditor-details { height: 4; display: none; }
+#auditor-model-field { width: 1fr; height: 4; margin-right: 1; }
+#auditor-effort-field { width: 18; height: 4; }
+Input { height: 3; }
+/* O Select dimensiona o container e o overlay; sua borda fica no SelectCurrent.
+   Uma borda no container :focus desloca o alvo entre MouseDown e MouseUp. */
+Select:focus > SelectCurrent, Input:focus { border: tall #93d6b4; }
+#prompt-row { height: 3; }
+#prompt-path { width: 1fr; }
+#choose-prompt { min-width: 12; width: 12; margin-left: 1; }
+#prompt-source-area, #prompt-content, #manual-source, #file-source, #mcp-source { height: auto; }
+#manual-prompt { height: 5; }
+#mcp-actions { height: 3; }
+#mcp-actions Button { width: 1fr; min-width: 9; }
+#remove-mcp, #query-mcp { margin-left: 1; }
+#mcp-status { height: auto; margin: 1 0; }
+#mcp-preview { height: 5; }
+#mcp-config-error { height: auto; }
+#scope { margin: 1 0; }
+#start { width: 100%; }
+Button.-primary { background: #315f58; color: #f4f9f7; }
+Button:focus { text-style: bold; }
+#monitor { width: 1fr; height: 1fr; }
+#progress-card { height: auto; min-height: 9; margin-bottom: 1; }
+#progress-module, #progress-state { height: 1; }
+#progress-heading { height: 1; }
+#progress-module { width: 1fr; }
+#elapsed { height: 1; width: 18; content-align: right middle; color: #92a5b8; }
+#progress { width: 100%; height: auto; min-height: 3; margin: 1 0; }
+#stage { height: auto; max-height: 2; }
+#plan-panel, #plan-progress-area { display: none; }
+#plan-content { height: auto; }
+#plan-progress-area { height: 2; }
+#plan-progress { height: 1; width: 100%; }
+#plan-progress Bar { width: 1fr; }
+#plan-count { height: 1; color: #92a5b8; }
+.planning #dashboard { min-height: 18; }
+.planning #plan-panel { display: block; height: 1fr; min-height: 4; margin-bottom: 1; }
+.planning #plan-progress-area { display: block; }
+.planning #progress-card { min-height: 7; }
+.planning #stage { max-height: 1; }
+.planning #log-card { height: 25%; min-height: 5; max-height: 9; }
+.planning #log-legend { height: 1; }
+#log-card { height: 1fr; min-height: 12; }
+#log-legend { height: 2; }
+#log { height: 1fr; background: #101820; padding: 0 1; }
+Footer { background: #16222d; }
+
+.narrow #dashboard { layout: vertical; height: auto; }
+.narrow #configuration { width: 100%; height: 28; margin: 0 0 1 0; }
+.narrow #monitor { width: 100%; height: 25; }
+
+ModalScreen { align: center middle; background: #080f18 80%; }
+.dialog {
+    width: 66;
+    max-width: 95%;
+    height: auto;
+    max-height: 90%;
+    padding: 1 2;
+    border: round #93d6b4;
+    background: #16222d;
+}
+.dialog-title { height: auto; text-style: bold; color: #f1d5a0; margin-bottom: 1; }
+.interview-dialog { width: 95%; max-width: 110; }
+.question { height: auto; margin: 1 0; }
+#interview-options { height: auto; max-height: 18; }
+#interview-options RadioButton { height: auto; text-wrap: wrap; text-overflow: fold; margin-bottom: 1; }
+#answer-hint { margin-top: 1; }
+.dialog-actions { height: 3; margin-top: 1; align-horizontal: right; }
+.dialog-actions Button { margin-left: 1; }
+.success { color: #93d6b4; }
+.error { color: #ff8e8e; }
+.file-dialog { height: 80%; }
+#prompt-tree { height: 1fr; min-height: 4; margin: 1 0; }
+
+.narrow .dialog { padding: 0 2; }
+.narrow .dialog-title { margin-bottom: 0; }
+.narrow .question { margin: 1 0 0 0; }
+.narrow #answer-hint { margin-top: 0; }
+.narrow .dialog-actions { margin-top: 0; }

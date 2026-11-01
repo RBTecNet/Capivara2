@@ -1,751 +1,819 @@
-# Capivara2 · wizard de inicialização
+# CAPIVARA2PTN
 
-Harness com wizard em tela cheia, feito em Python com
-[Textual](https://textual.textualize.io/). O `init` recebe o pedido, entrevista o
-usuário e produz um prompt profissional por fases, aprovado por um revisor.
-O `plan` decompõe esse documento em tasks pequenas e revisadas, sem gerar código.
+Pacote Python instalável com TUI persistente em Textual, textual-image e Pillow.
+INIT implementado com entrevista progressiva, geração do PRD e G0 de fidelidade.
+PLAN gera fases/tasks e executa G0 por thread. Requer Python 3.11 ou superior.
+BUILD executa uma task por vez, com G0, G1 e G2 opcionais e realimentação.
 
-## Executar
+## Instalação
 
-O comando local pode ser aberto em qualquer pasta:
-
-```bash
-capivara2
-```
-
-Para instalar ou atualizar a versão local, com Python 3.11 ou superior:
+Clone este repositório e instale com pipx:
 
 ```bash
-./scripts/install-local.sh
+git clone git@github.com:RBTecNet/Capivara2.git capivara2ptn
+cd capivara2ptn
+pipx install .
 ```
 
-O instalador usa um ambiente virtual no projeto e disponibiliza o comando em
-`~/.local/bin/capivara2`. Essa pasta deve estar no `PATH`. A instalação é editável,
-portanto usa os arquivos desta pasta do projeto. Também é possível executar
-`.venv/bin/capivara2` ou `.venv/bin/python -m harness` diretamente no projeto.
+Alternativa, dentro da pasta clonada, com ambiente virtual isolado e comando
+no PATH do usuário:
 
-O caminho inicial é sempre a pasta de trabalho do terminal ao abrir o programa.
-Para usar outro projeto, execute `capivara2` a partir daquela pasta, ou edite o
-caminho na primeira tela.
+```bash
+python3 -m venv ~/.local/share/capivara2ptn/venv
+~/.local/share/capivara2ptn/venv/bin/python -m pip install .
+mkdir -p ~/.local/bin
+ln -s ~/.local/share/capivara2ptn/venv/bin/capivara2ptn ~/.local/bin/capivara2ptn
+```
 
-Após cada rodada com implementação ou correção, a instalação local é atualizada
-e um commit local é criado, conforme [AGENTS.md](AGENTS.md). O envio para o remoto
-exige autorização do usuário.
+Garanta que `~/.local/bin` esteja no `PATH`. Para atualizar essa instalação,
+execute na pasta clonada:
 
-## Fluxo
+```bash
+git pull --ff-only
+~/.local/share/capivara2ptn/venv/bin/python -m pip install --upgrade --force-reinstall --no-deps .
+```
 
-1. Conferir ou editar a pasta do projeto; Enter confirma.
-2. Escolher `init` ou `plan`. O plan exige init aprovado e íntegro e começa
-   selecionado após sua conclusão. Depois do plan aprovado, `build` é destacado,
-   e pode ser executado usando os artefatos aprovados.
-3. No init, escolher entre prompt manual, arquivo e base MCP. No plan, essa
-   etapa é pulada: a origem é sempre `.harness/prompts/final.md`.
-4. Digitar o prompt com múltiplas linhas, informar um arquivo UTF-8 ou selecionar
-   a instância MCP e o projeto remoto.
-5. Selecionar IA escritora, modelo e effort.
-6. Reutilizar a configuração do escritor como revisor ou selecionar outra IA,
-   modelo e effort.
-7. Conferir o resumo e responder “Executar agora?”.
-8. Responder às entrevistas e acompanhar o ciclo de revisão até a aprovação.
+## Execução
 
-No prompt manual, **Enter insere uma linha** e **Ctrl+D confirma**. Menus usam
-as setas e Enter; Tab alterna entre os controles, Esc volta e Ctrl+Q sai.
-Os controles também aceitam mouse. O rascunho do prompt permanece ao voltar.
+Dentro do diretório de trabalho desejado, execute:
 
-Arquivos de prompt podem usar caminhos absolutos, `~` ou caminhos relativos à
-pasta do projeto selecionada. O conteúdo é lido e validado antes de avançar.
+```bash
+capivara2ptn
+```
 
-“Sim” inicia o módulo documental selecionado. “Não” encerra o wizard sem executá-lo.
+Também é possível executar `python -m capivara2ptn` com o Python do ambiente
+em que o pacote foi instalado. A aplicação captura e exibe o cwd original;
+não muda o diretório global. Caminhos de prompt digitados podem ser absolutos
+ou relativos a esse diretório. O seletor de arquivos abre nele e somente
+preenche o campo, sem ler ou executar o prompt.
 
-## Init documental
+Use Tab/Shift+Tab para navegar, setas e Espaço para selecionar o módulo,
+Enter para abrir seletores e acionar botões, e Ctrl+Q para sair. O log aceita
+foco e rolagem pelo teclado. Em terminais menores que 100 colunas, os cards
+são empilhados e a tela pode ser rolada. Recomenda-se pelo menos 80×24.
+Para ver progresso, fases e logs simultaneamente no PLAN, prefira pelo menos
+80×30; em telas muito baixas, os painéis continuam acessíveis pela rolagem geral.
 
-O revisor analisa o prompt original e toda a documentação textual recebida,
-preserva seus requisitos e aponta lacunas. O escritor transforma essas lacunas
-em entrevistas e depois redige o prompt completo. O contexto de cada papel é
-salvo separadamente e recuperado a cada chamada, inclusive quando escritor e
-revisor usam o mesmo modelo.
+Os atalhos F2 (entrevista INIT), F3 (sucesso), F4 (falha) e F5 (continuação
+INIT → PLAN) abrem prévias independentes dos diálogos. A entrevista exige
+uma alternativa; a opção livre exige texto não vazio. Esc fecha as prévias.
+Confirmar uma prévia apenas fecha o diálogo, sem iniciar ou encadear módulos.
+As prévias não abrem durante uma execução real dos módulos.
 
-Cada pergunta tem opções concretas, uma recomendação justificada pela finalidade
-do pedido e exatamente uma opção **Outra opção — descrever livremente**. A escolha
-recomendada começa destacada, mas exige confirmação. No texto livre, Enter cria
-uma linha e Ctrl+D confirma. Esc retorna às opções; Esc nas opções interrompe o init.
+Selecione INIT, provedor, modelo, effort e origem do pedido e pressione Iniciar.
+BUILD fica disponível com PLAN concluído. Selecionar PLAN e pressionar Iniciar começa
+o planejamento do PRD concluído do projeto atual. Não há estimativas de duração
+ou porcentagens fictícias.
 
-Stack e ferramentas do projeto são obrigatoriamente levantadas quando não estão
-explícitas no material original. Ferramentas exclusivamente internas do harness
-são inferidas pelos agentes. Isso inclui suítes, frameworks, runners de testes e
-automação de navegador, mesmo quando o pedido exige testes automatizados e fluxos
-reais no navegador. Essas exigências são preservadas como critérios de qualidade;
-escolher suas ferramentas não vira uma pergunta para o usuário.
+No INIT, o card Progresso mostra Pedido → Análise → Entrevista → Redação →
+Revisão → Concluído, com etapas concluídas em verde, etapa em curso em amarelo
+e etapas aguardando em tom discreto. Falhas/reprovação são marcadas em vermelho;
+com gates desligados, Revisão aparece como pulada. A barra acompanha os eventos
+reais do INIT e se distribui em mais linhas quando o card é estreito.
 
-Antes de exibir a entrevista, o harness devolve perguntas de escolha de ferramentas
-de QA ao escritor para convertê-las em decisões internas. As inferências ficam em
-`.harness/control/inferred-decisions.json` e são entregues ao escritor e ao revisor
-para constar na fase 0, separadas das respostas do usuário. Decisões funcionais do
-produto continuam sendo entrevistadas normalmente.
+## INIT e G0
 
-Uma citação de stack/ferramentas que não corresponde ao texto é devolvida ao revisor
-para corrigir a evidência, sem reabrir automaticamente uma entrevista. Se faltar
-clareza na fase 0, o escritor corrige a documentação usando as decisões existentes.
-Respostas mais recentes que alteram a mesma decisão prevalecem sobre as antigas,
-mantendo o histórico para auditoria.
+O funcionamento foi migrado de `~/Documentos/Projetos/capivarinha/init.sh`,
+preservando a entrevista progressiva: uma chamada independente por pergunta,
+sempre com o pedido original e todo o histórico. Não há quantidade mínima ou
+máxima de perguntas nem perguntas artificiais para prolongar a entrevista.
 
-O init não verifica instalação de ferramentas, não
-inspeciona o ambiente, não executa testes da aplicação e não gera seu código.
-Os CLIs são chamados para produzir respostas documentais, com ferramentas
-desabilitadas ou negadas pelos adaptadores.
+O modelo devolve uma pergunta e alternativas em JSON, ou somente `CONCLUIDO`.
+A TUI apresenta a pergunta no modal existente, com múltipla escolha e Outra
+resposta. A resposta confirmada é salva antes da próxima chamada. Cancelar o
+modal interrompe o INIT, preservando o histórico confirmado.
 
-O escritor devolve requisitos, decisões, stack, ferramentas e fases com atividades,
-entregáveis, dependências e critérios de aceite. O harness gera a **fase 0 — Stack
-e ferramentas**, seguida por fases consecutivas de implementação. O revisor
-confere fidelidade ao pedido original e às respostas, ausência de lacunas, fases
-coerentes e viabilidade documental. Novas lacunas geram outra entrevista; desvios
-e impossibilidades explicitamente justificados retornam para correção automática.
-Esse ciclo não tem limite fixo de rodadas nem aprovação por esgotamento de tentativas.
+O modal da entrevista aproveita até 95% da largura do terminal (máximo de 110
+colunas). Alternativas longas ou com quebras explícitas ocupam várias linhas,
+sem corte por reticências. A lista e o modal permitem rolagem quando necessário,
+mantendo a navegação por teclado e a opção Outra resposta.
 
-Somente uma aprovação explícita e consistente do revisor cria `prompts/final.md`
-e marca o init como concluído. Contratos JSON inválidos são devolvidos ao agente
-com o motivo para correção, sem limite fixo. Uma falha do CLI deixa o init incompleto,
-com logs para diagnóstico. A tela permite tentar novamente. Esc interrompe o
-processo; Ctrl+Q encerra a TUI e cancela a execução em andamento.
+Após `CONCLUIDO`, outra chamada gera o PRD final. Com gates habilitados, uma
+chamada independente, em modo de leitura, executa apenas G0 INIT. O validador recebe
+pedido original, histórico e PRD como dados separados das instruções Markdown.
+A aprovação exige somente `G0 APROVADO`. A reprovação exige `G0 REPROVADO` e
+justificativa. Texto contraditório, ausência de decisão ou falha da CLI nunca
+aprovam o INIT. Não há correção automática, nova tentativa ou outro gate.
 
-Todos os artefatos ficam na pasta `.harness` do projeto selecionado:
+Quando aprovado, ou ao concluir o PRD com gates desabilitados, a TUI exibe
+sucesso e oferece selecionar PLAN, preservando
+provedor, modelo e effort. Aceitar apenas muda a seleção: PLAN não é executado.
+Reprovação ou falha interrompe o INIT e não oferece continuação. A conclusão
+também registra o hash do PRD em `.harness/dados/init-concluido.json`, para reconhecer o
+resultado após reiniciar, sem alterar a entrevista ou o PRD.
+
+Os arquivos seguem os nomes do Bash, dentro do cwd capturado na abertura:
 
 ```text
-.harness/
-  status.json                    # status de init, plan e build
-  owner.json                     # identificação da pasta gerenciada
-  prompts/initial.md             # pedido original, preservado
-  prompts/round-0001.md           # candidatos de cada rodada
-  prompts/final.md               # somente após aprovação
-  prompts/final.json             # representação estruturada para o plan
-  enterviews/round-0001.json      # perguntas, recomendações e respostas
-  context/                       # documentos recebidos e anexos preservados
-  control/reviewer-context.json  # contexto recuperável do revisor
-  control/writer-context.json    # contexto do escritor
-  control/approval.json          # revisão e hash do prompt aprovado
-  log/                           # progresso, entradas, saídas e erros dos CLIs
+.harness/dados/prompt-original.txt   pedido original
+.harness/dados/entrevista.txt        perguntas, alternativas e respostas confirmadas
+.harness/dados/resposta.txt          última resposta da entrevista, inclusive CONCLUIDO
+.harness/dados/prompt-final.md       PRD final
+.harness/dados/g0-init.txt           resposta original do G0
+.harness/dados/init-concluido.json   conclusão persistida e hash do PRD
+.harness/dados/erro-init.txt         motivo de falha/cancelamento, quando houver
 ```
 
-Reexecutar o init substitui os artefatos anteriores dessa pasta gerenciada e
-reinicia os status de plan/build. Os arquivos da aplicação na raiz são preservados.
-Uma pasta `.harness` não reconhecida é preservada e gera uma mensagem, em vez de
-ser apagada. Ao reabrir um projeto cujo prompt final aprovado continua íntegro,
-`plan` é destacado como próximo módulo. O build usa o plano aprovado para preparar o ambiente e gerar a aplicação.
+Um INIT concluído pode ser refeito após o aviso e a confirmação descritos abaixo.
+Um INIT incompleto continua preservado para inspeção, sem retomada da entrevista. O código-fonte e a instalação da CAPIVARA2PTN são recusados
+como destino de arquivos de projeto. Ctrl+Q encerra a TUI e interrompe a CLI.
 
-## Plan documental
+### Arquivos ocultos e módulo inicial
 
-O plan lê o prompt final e sua representação estruturada, confere o hash e a
-aprovação do init e preserva a ordem, as dependências e a identidade de suas fases.
-A **fase 0 — Stack de implantação e dependências de desenvolvimento e testes**
-documenta as escolhas já aprovadas. As demais fases são divididas em tasks pequenas,
-com IDs estáveis, objetivo delimitado, passos de implementação, entregáveis e
-referências literais da fase e do contexto global aprovado. Citações de requisitos
-globais, stack e ferramentas não ampliam a responsabilidade da task; seus IDs de
-cobertura continuam limitados ao recorte atribuído na fase.
+Os artefatos da ferramenta ficam em `.harness/dados/`; as opções locais ficam
+em `.harness/.capivara2ptn.json`. Na abertura, arquivos reconhecidos da versão
+anterior são movidos automaticamente para esses destinos. Conteúdo desconhecido
+em uma pasta `dados/` do produto permanece na raiz. Conflitos entre arquivos
+legados e novos são informados sem sobrescrever o arquivo conflitante.
 
-Antes da redação, o revisor classifica semanticamente as atividades do init em
-implementação, documentação e responsabilidades do build. Itens mistos são divididos em
-recortes literais que cobrem todo o texto original. O harness verifica a partição; o
-revisor decide somente a responsabilidade de cada parte, sem reescrever a origem.
-O mapa resultante recebe aprovação explícita e fica estável durante o plan. Não há
-classificador por início de frase: “Usar Playwright para executar fluxos” é avaliado pelo
-seu significado. Critérios e entregáveis coletivos permanecem referências de conjunto.
+Ao reabrir um projeto com INIT concluído, PLAN é selecionado. Com PLAN concluído,
+BUILD é selecionado. Se houver execução interrompida, Iniciar retoma a task pendente;
+se estiver concluído, o resultado é exibido sem reiniciar automaticamente.
+Nenhum módulo começa a executar apenas por abrir a TUI.
 
-O escritor recebe uma task, stack, restrições e requisitos globais do produto, sem a fase
-inteira ou histórico conversacional. O revisor verifica apenas o recorte atribuído, usando
-os detalhes globais quando necessários (por exemplo, os valores de um status).
-Cada thread é responsável apenas por sua task. Quando todas as threads estão aprovadas,
-o controlador conclui a fase. Nenhum agente recebe a fase, nem um agrupamento de
-resumos ou entregas das outras threads.
+Selecionar INIT ou PLAN já concluído abre um aviso. **Apenas consultar** mantém
+todos os arquivos. **Refazer ao iniciar** autoriza a exclusão, aplicada somente
+ao iniciar a execução: refazer INIT exclui seus resultados e os resultados de
+PLAN/BUILD; refazer PLAN preserva INIT e exclui PLAN/BUILD. Arquivos do produto
+fora de `.harness/dados/`, opções locais e prompts globais são preservados.
 
-Uma devolução de conteúdo exige um **contrato de correção**: task e versão de origem,
-evidência literal, problema concreto, substituições exatas por campo e condições de aceite
-`contains`/`excludes`. O harness confere que o defeito existe antes e que a mudança satisfaz
-o aceite. Outro exame documental valida a coerência desse contrato antes de enviá-lo ao
-escritor. Uma proposta rejeitada volta ao revisor dessa mesma thread para correção
-automática, preservando as outras aprovações.
+### Opções locais de execução
 
-O escritor aplica cada contrato uma única vez e preserva os campos restantes. Se sua
-resposta desviar das substituições autorizadas, o harness aplica exatamente o patch
-aprovado e registra a recuperação; não pede outra tentativa. A task corrigida ainda
-precisa de aprovação explícita do revisor. Os aceites já estabelecidos permanecem ativos:
-uma nova devolução não pode exigir o contrário ou reabrir o mesmo conflito, mesmo com
-outra redação. Uma incompatibilidade retorna ao revisor dessa thread, sem reabrir
-entregas das outras threads.
+O card de configuração oferece dois toggles independentes, preservados ao
+alternar módulos e ao reabrir a aplicação no mesmo diretório:
 
-Remoção, divisão e consolidação são operações estruturadas, aplicadas em lote após validar
-cobertura e conflitos. Elas não são instruções vagas para o escritor. A revisão individual
-não possui esses campos; pode solicitar uma reavaliação estrutural específica. IDs removidos
-não são reutilizados e as versões retiradas ficam no histórico. Uma decisão vigente não é
-silenciosamente substituída. Repetir o mesmo problema estrutural sem mudar o mapa é falha
-de contrato, sem aprovação automática.
+- **Habilitar gates:** habilitado por padrão. No INIT, desligar essa opção pula
+  o G0 e encerra após gerar o PRD. O resultado informa explicitamente que G0
+  não foi executado; não declara `G0 APROVADO`. Erros reais da CLI continuam
+  interrompendo a execução. PLAN aplica o mesmo valor ao G0 por thread;
+  BUILD aplica a opção a G0, G1 e G2.
+- **Proibir testes automatizados:** desabilitado por padrão. Quando habilitado,
+  cada chamada recebe uma restrição curta de execução: não criar arquivos,
+  suítes ou tarefas de testes automatizados, preservar testes existentes e
+  permitir compilação, typecheck e conferências pontuais sem criar suítes.
+  Não há fiscalizador adicional nem remoção de arquivos.
 
-Cada aprovação individual recebe um certificado ligado à versão exata da task.
-O controlador consolida esses certificados e marca a fase como concluída quando todas
-as suas threads estão aprovadas. A conclusão do plan também é local, sem chamada global
-a um LLM. O build só é habilitado após todas as aprovações e certificados íntegros.
-A retomada recupera o checkpoint e essas aprovações, sem reproduzir revisões coletivas antigas.
+As escolhas são salvas no arquivo `.harness/.capivara2ptn.json` do diretório de trabalho:
 
-Erros de JSON/schema e respostas inconsistentes são recuperados automaticamente na mesma
-operação, com espera cancelável, sem limite fixo de tentativas e sem refazer tasks aprovadas.
-O diagnóstico de recuperação fica em `control/response-recovery.json`; contradições reais
-da documentação continuam exigindo correção, nunca aprovação por insistência.
-O dashboard contabiliza correções documentais e erros de contrato separadamente.
+```json
+{
+  "gates_enabled": true,
+  "forbid_automated_tests": false
+}
+```
 
-Os agentes usam modo conciso por padrão, em todos os provedores: JSON compacto,
-aprovação com `summary: "OK"` e rejeição limitada ao defeito funcional e à correção
-necessária. Questões editoriais são ignoradas. Os prompts removem anotações automáticas
-de schema e metadados duplicados; a task, os requisitos e as evidências permanecem
-integrais. Essa orientação não cria limites de tamanho nem novas rejeições por
-verbosidade. Código, comandos e documentação conservam os detalhes necessários.
+INIT e PLAN releem essa configuração ao iniciar. Os valores lidos valem para essa
+execução; alterações posteriores valem para a próxima. A restrição de testes é
+aplicada pelo mecanismo de chamada compartilhado, sem modificar os prompts
+Markdown editáveis ou acrescentá-la como funcionalidade ao PRD. Alterar toggles
+não modifica PRDs ou planos existentes. Não há banco de dados.
 
-Todos os provedores usam uma camada comum de decodificação. JSON simples, blocos Markdown,
-texto ao redor do JSON e envelopes nativos convergem para o mesmo contrato interno;
-respostas ambíguas voltam ao agente. Saídas originais e arquivos `.normalized.json` ficam
-nos logs. Não é necessário outro modelo como tradutor.
+### Escritor e auditor independentes
 
-O revisor do plan informa `findings` com categoria, IDs dos requisitos e edições
-`find/replace`. Versões, valores anteriores, citações e condições de aceite são preenchidos
-pelo controlador. Grafia e preferências de apresentação sem mudança de sentido são
-observações não bloqueantes em `control/observations`; perdas de funcionalidade, cobertura
-ou fidelidade continuam exigindo correção e nova revisão. A resposta não precisa repetir
-booleanos de aprovação que podem contradizer os próprios problemas descritos.
+Provedor, modelo e effort originais representam o **escritor**. Logo abaixo,
+**Provedor · auditor** oferece **Mesmo do escritor** por padrão, herdando os
+três valores no início da execução. Escolher um dos quatro provedores mostra
+modelo e effort próprios, lado a lado. A descoberta, os IDs e a entrada manual
+usam o mesmo mecanismo das seleções existentes, sem nova API.
 
-O encaminhamento depende da ação proposta em qualquer fase/task. Edições que ajustam
-responsabilidades dentro do escopo aprovado são correções de conteúdo, inclusive quando
-classificadas como `granularity`. Divisão, consolidação e alteração de seeds seguem o
-fluxo estrutural. Findings sem edições podem explicar um `replan` ou uma operação
-estrutural já fornecida; não são tratados como patches ausentes. O replanejamento
-informa IDs de requisitos e recebe suas citações canônicas do controlador.
+A escolha efetiva do auditor é usada somente em G0 INIT, G0 PLAN, G0 BUILD e
+G2 BUILD. Entrevista, geração do PRD, planejamento, implementação e todas as
+correções continuam no escritor original. G1 permanece determinístico. Gates
+desligados não chamam o auditor nem exigem selecionar seu modelo.
 
-Correções independentes podem afetar o mesmo campo e requisito. Os aceites registram
-os trechos corrigidos, sem congelar o campo inteiro. Uma proposta repetida ou contraditória
-volta ao revisor para diagnóstico; não encerra o plan nem reaplica a mesma correção.
-Propostas de correção rejeitadas também são refeitas antes de chegar ao escritor.
+As escolhas ficam no mesmo `.harness/.capivara2ptn.json`, no campo `auditor`:
 
-Uma alteração estrutural atualiza referências a uma task retirada quando a cobertura
-aponta um único sucessor. Os contratos originais ficam no histórico e os documentos
-afetados voltam à revisão. Havendo vários sucessores, o harness preserva a ambiguidade
-para o revisor resolver, sem manter um literal de ID retirado como regra imutável.
+```json
+{"provider":"writer","model":null,"effort":"Default"}
+```
 
-Cada chamada recebe apenas o recorte necessário: finalidade, restrições, requisitos e
-conteúdo da própria task. O pedido integral e as versões aprovadas permanecem em disco,
-sem reenviar textos completos de outras fases ou cópias redundantes dos prompts.
+`writer` significa Mesmo do escritor; uma escolha independente usa `codex`,
+`claude`, `agy` ou `opencode`, o ID original do modelo e o effort selecionado.
+O arquivo é relido ao iniciar o módulo; mudar o auditor não reavalia tasks
+concluídas nem muda uma execução já em andamento. Prompts dos gates permanecem
+intactos. Os erros das CLIs mantêm o comportamento próprio de cada módulo.
 
-O plan não entrevista o usuário, gera código, verifica dependências instaladas ou
-executa testes. Suas verificações se limitam à correspondência entre os documentos.
-Também não cria cenários, comandos, estratégias ou roteiros de testes para o build;
-o build definirá suas validações. Identificar as dependências de desenvolvimento e
-testes já aprovadas na fase 0 não constitui um plano de testes.
+### Cronômetro por módulo
 
-O plan **não determina o que o build deve ou não testar**. O build escolhe livremente os
-testes, inclusive os não citados na origem. Menções a QA no init são preservadas no mapa
-como referências de responsabilidade, sem virar tasks de testes, cenários ou limites.
-Documentar nomes de dependências já aprovadas na fase 0 é permitido. Regras funcionais
-de campos e infraestrutura de produção continuam nas tasks de implementação.
+A linha do módulo no card de progresso mostra **Tempo: HH:MM:SS**, usando
+`time.monotonic()` durante a execução. INIT, PLAN e BUILD têm acumulados
+independentes. Selecionar um módulo ou deixar a TUI aberta não conta tempo.
+A contagem começa ao entrar no fluxo, depois da validação da entrada e de um
+reinício confirmado, e para em sucesso, falha ou interrupção, antes dos
+modais de resultado/continuação. Perguntas da entrevista e novas tentativas
+fazem parte do tempo do módulo enquanto ele está executando.
+
+Apenas os segundos acumulados são persistidos no campo `elapsed_seconds` da
+configuração existente, sem relógio absoluto ou origem monotônica. Há um
+checkpoint a cada segundo ativo e uma gravação ao parar; uma interrupção
+forçada pode perder a fração posterior ao último checkpoint. Reabrir e retomar
+acrescenta somente o tempo da nova execução, sem o intervalo parado.
+
+Refazer INIT zera seus tempos e os de PLAN/BUILD, cujos resultados são excluídos;
+refazer PLAN preserva INIT e zera PLAN/BUILD; refazer BUILD zera somente BUILD.
+A confirmação isolada não zera nada: a exclusão/reset ocorre ao iniciar.
+Execuções antigas sem tempo registrado mostram `--:--:--`, sem duração inventada.
+O INIT conserva o fluxo anterior, sem nova retomada da entrevista; seu tempo
+interrompido permanece salvo. A retomada do trabalho continua disponível onde
+já existia, no PLAN e BUILD.
+
+### Prompts externos editáveis
+
+No primeiro uso, os modelos distribuídos com o pacote são copiados, sem
+sobrescrever arquivos existentes, para a configuração global do usuário:
 
 ```text
-.harness/plan/
-  source.json                    # cópia da origem aprovada e seu hash
-  final.md                       # plano somente após aprovação completa
-  final.json                     # fases e tasks estruturadas para o futuro build
-  phases/00/outline.json          # recortes da fase 0
-  phases/00/tasks/P0-T001.json    # documentação de uma única task
-  phases/00/approved.json         # fase consolidada pelo controlador
-  context/call-0001.json         # entrada isolada, sem histórico de outras chamadas
-  control/settings.json          # escritor, revisor e política de contexto
-  control/checkpoint.json        # progresso e versões aprovadas
-  control/requirements.json      # requisitos e partes literais com responsáveis
-  control/classification.json    # classificação semântica aprovada
-  control/classification-approval.json # certificado do mapa e hash da origem
-  control/corrections.json       # contratos, aceites e versões corrigidas
-  control/completion-certificate.json # conferência explícita das aprovações
-  control/contract-failure.json  # diagnóstico, somente se houver falha de contrato
-  control/coverage.json          # mapa de responsabilidades por recorte
-  control/issues.json            # pendências e decisões de escopo vigentes
-  control/repairs/                # lotes de correções e operações estruturais
-  control/retired/                # histórico de tasks removidas ou substituídas
-  control/reviews/               # pareceres de cada comparação documental
-  control/approval.json          # aprovação global e hash do plano
-  log/                           # entradas, saídas, erros e eventos deste módulo
+~/.config/capivara2ptn/prompts/init.md
+~/.config/capivara2ptn/prompts/init-final.md
+~/.config/capivara2ptn/prompts/gates/g0-init.md
+~/.config/capivara2ptn/prompts/plan.md
+~/.config/capivara2ptn/prompts/gates/g0-plan.md
 ```
 
-O status do plan fica no arquivo compartilhado `.harness/status.json`. Reexecutá-lo
-substitui somente `.harness/plan` e reinicia o status do build, preservando o init
-e os arquivos da aplicação. Init e plan não podem executar ao mesmo tempo no mesmo
-projeto. Uma interrupção ou falha mantém os registros e não libera o build.
+Se `XDG_CONFIG_HOME` for absoluto, ele substitui `~/.config`. **Edite essas
+cópias globais ativas**: cada chamada relê o arquivo, mesmo com a TUI aberta,
+sem reinstalar ou recompilar. Os arquivos em `src/capivara2ptn/prompts/` são
+somente os modelos iniciais distribuídos no pacote. Atualizações não substituem
+as instruções globais editadas pelo usuário.
 
-Só depois de aprovar todas as tasks, todas as fases e o plano completo, o plan é
-marcado como concluído. Ao reabrir a TUI, o build fica habilitado e selecionado se
-a origem e o plano aprovado continuarem íntegros. O plan continua disponível para reexecução.
+Depois da primeira preparação, um arquivo removido não é recriado. Arquivo
+ausente, ilegível ou vazio interrompe a etapa. Em particular, G0 sem instruções
+nunca aprova automaticamente. Não há cópia das instruções de validação no Python.
+O caminho efetivamente usado aparece no log ao iniciar o INIT.
 
-## Build
+INIT utiliza `gates/g0-init.md`; PLAN utiliza `gates/g0-plan.md` a cada thread.
+BUILD usa `gates/g0-build.md`; seu escritor usa `BUILD.md` e G2 usa `G2.md`,
+aproveitando os nomes dos arquivos já reservados no pacote. A preparação dos
+prompts do PLAN não sobrescreve nenhum prompt existente, inclusive G0 INIT.
 
-O build exige init e plan aprovados e íntegros. A origem é sempre `.harness/plan`;
-a aplicação produzida fica na **raiz do projeto selecionado**. O wizard seleciona
-escritor/modelo/effort, modo **serial** ou **paralelo**, máximo de agentes (1 a 32,
-quando paralelo) e revisor compartilhado ou independente. Não há escolha de prompt.
+## PLAN e painel de fases/threads
 
-Primeiro, o builder apresenta a fase operacional **ENV — Preparação do ambiente**,
-separada das fases do plan, com inventário e status de cada dependência. O agente
-apenas propõe o JSON de runtime, pacotes de desenvolvimento e ferramentas necessários
-à stack; ambiente e blueprint não liberam ferramentas ao modelo. É o controlador que executa check, tenta a instalação sem interação e
-repete o check. Comandos recebem stdin fechado e configurações não interativas;
-`sudo` automático usa `-n`. Uma dependência continua pendente se o check real falhar.
-Uma falha de acesso ao `package.json` pelo mapa de exports npm é reparada no
-verificador, sem reinstalar pacotes presentes nem alterar seus exports. Pacotes
-realmente ausentes continuam exigindo instalação. Instruções manuais resolvidas
-são arquivadas em `.harness/build/control/resolved-dependencies`.
+Selecione PLAN, confira provedor/modelo/effort e pressione Iniciar. O módulo
+utiliza automaticamente `.harness/dados/prompt-final.md`, sem solicitar outro pedido.
+O PRD precisa pertencer a um INIT concluído. Registros novos usam o hash salvo
+na conclusão; PRDs alterados são recusados. Para os INITs anteriores a esse
+registro, são exigidos pedido original, histórico, resposta `CONCLUIDO`, PRD
+não vazio e ausência de falha; se houver G0 INIT, ele precisa estar aprovado.
 
-Um bloqueio interrompe o build antes da geração de código: o painel informa os pacotes,
-`.harness/build/manual-install.md` contém instruções e erros concretos, e
-`install-manual.sh` é criado quando existem comandos utilizáveis. O script manual
-pode pedir a autenticação do próprio usuário. Quando não há comandos automáticos,
-a orientação é específica e não há script vazio fingindo instalar. Após resolver,
-execute build novamente. Dependências adicionais de um check G3 são instaladas numa
-área de ferramentas interna, sem alterar o manifesto da aplicação durante o teste.
-CLIs ausentes precisam ser instalados/autenticados ou configurados no catálogo.
+A migração preserva a chamada única de `capivarinha/plan.sh`: o planejador recebe
+o PRD e devolve todo o plano em Markdown. O Python identifica fases/tasks,
+salva cada task como uma thread individual e percorre essas threads na ordem
+declarada, sem paralelismo. A fase inteira nunca é usada como uma única chamada
+de execução ou de aprovação. BUILD executa essas definições individualmente, conforme descrito abaixo.
 
-O builder solicita um escopo por chamada, enviando apenas uma task do plan,
-sem executar ferramentas nessa análise. O dashboard informa quantos escopos já estão
-prontos, antes de iniciar G0. O controlador
-reúne os escopos e agenda as threads; nenhum modelo recebe o plano completo para isso.
-Cada worker usa uma cópia
-isolada da aplicação e das dependências locais. Reservas incluem escritas e leituras;
-uma escrita que conflita com leitura/escrita de outra task impede paralelismo.
-Escopos desconhecidos (`**`) são serializados. Fases respeitam suas dependências e
-a fase 0. O máximo configurado é um teto; conflitos podem reduzir o número efetivo.
+O formato mantém `## Fase N — Nome` e `### Task N.M — Nome`. Cada task declara
+`Dependências: nenhuma` ou os IDs de tasks anteriores. Não há reordenação para
+consertar dependências: referência desconhecida, própria ou posterior interrompe
+o PLAN com o Markdown preservado. Cada definição individual inclui seu contexto
+tecnológico, o objetivo da fase e apenas a task correspondente, para uso futuro
+pelo BUILD.
 
-Os validadores G2/G3 de cada worker recebem uma visão temporária com sua entrega,
-a base correspondente e dependências declaradas ou importadas. Fontes não relacionadas
-não são copiadas para essa visão. Os scripts funcionais retornam ao workspace da task
-para execução pelo harness; outras threads mantêm suas próprias devoluções e aprovações.
+Com gates habilitados, G0 avalia **cada thread**, com o PRD, sua definição e
+dependências, usando o arquivo externo atualizado. Não existe avaliação ou
+aprovação independente da fase inteira. Uma reprovação objetiva retorna ao mesmo
+escritor para corrigir exclusivamente a task atual, com o PRD, o motivo exato
+e o contexto das dependências. G0 reavalia a correção até aprovar, sem limite
+de tentativas. Tasks aprovadas não são reescritas nem reavaliadas.
 
-Antes da integração, o harness confere os arquivos realmente alterados contra a reserva
-e compara a base com a raiz atual. Mudanças fora da reserva ou alterações externas
-não são sobrescritas. As integrações são serializadas e têm restauração em caso de erro.
-Cancelamento aguarda a integração em andamento terminar seu checkpoint.
+O escritor devolve somente a task atual, mantendo seu ID. A aplicação substitui
+apenas esse trecho no plano e na definição individual. Se a correção exigir
+mudar outras tasks ou fases, deve informar `ALTERACAO_AMPLA_NECESSARIA` e o
+PLAN interrompe sem aplicar a proposta. Saída ambígua, erro da CLI, cancelamento
+ou falha de escrita também interrompem; não há retry de infraestrutura.
+Com gates desligados, a thread conclui após sua definição ter sido salva; G0
+não é chamado e sua bolinha não aparece. A restrição de testes é encaminhada ao
+planejador e ao G0 pelo mecanismo compartilhado, sem fiscalizador adicional.
 
-Cada task passa pelos gates:
+Ao selecionar PLAN, os logs ficam menores e o espaço liberado mostra o painel
+rolável de fases e threads. Cada fase tem uma bolinha; cada thread tem a bolinha
+do escritor e, apenas se os gates desse PLAN estavam habilitados, a do G0.
+Cinza indica pendente, amarelo pulsante indica atividade real, verde indica
+conclusão/aprovação e vermelho indica falha. A fase fica verde somente quando
+todas as suas threads concluem. A barra usa contagens reais de threads e fases.
 
-| Gate | Responsabilidade | Evidência |
-|---|---|---|
-| G0 | Escritor produz a unidade | Arquivos reais na cópia isolada |
-| G1 | Auditor confere existência | Arquivos declarados existem; código não é substituído por uma descrição |
-| G2 | Validador compara à task | Rejeições citam requisito e trecho real do código, com mudança e aceite específicos |
-| G3 | Verificador comprova funcionamento mínimo | Até três checks focados, executados pelo harness, com assertivas ou saída esperada |
-
-G1 não julga qualidade. Ausência de entrega retorna a G0. G2/G3 rejeitados ficam
-vermelhos; ao devolver para escrita, os gates seguintes voltam a aguardar e G0 fica
-amarelo. Aprovação de G3 só fica verde quando a entrega também foi integrada.
-Tasks documentais entregam documentos reais e podem dispensar comandos G3;
-a existência e a fidelidade do documento continuam obrigatórias.
-
-Checks G3 exercitam **a unidade da task**, com dados isolados, sem suíte do sistema,
-matriz extensa ou critérios estéticos. O verificador pode escolher Playwright ou outra
-ferramenta adequada e reutilizar runners/testes existentes. O critério é exercitar o
-comportamento pedido: não há obrigação de criar wrappers, repetir citações literais
-ou fornecer `assertion_file`/`expected_stdout`. O harness executa os comandos e confere
-o resultado real. Fontes não podem ser alteradas pelo validador durante a medição.
-Os checks são registrados e podem ser corrigidos quando o problema é o próprio teste;
-a forma do teste pode mudar, preservando o resultado funcional esperado. Recorrência do mesmo conflito ou correção que não muda a entrega
-gera diagnóstico, sem aprovação por insistência. Caches Python da cópia são limpos antes
-dos checks para evitar validar bytecode de uma versão anterior gravada no mesmo segundo.
-
-Uma task adicional **Documentação de instalação e execução** garante README com
-pré-requisitos, comandos reais, configuração e exemplos de uso aplicáveis. Variáveis
-necessárias usam `.env.example` sem credenciais. Cada fase tem somente uma bolinha:
-vazia antes de iniciar, amarela piscando durante o trabalho e verde após suas tasks.
-Tasks têm quatro bolinhas G0–G3 e uma barra mostra o progresso das entregas concluídas.
-
-Execuções seguintes reutilizam tasks já integradas quando a fonte e os arquivos
-continuam válidos. Alterações externas invalidam as reservas afetadas e suas dependentes.
-Tasks incompletas também são retomadas: a cópia de trabalho, o último gate confirmado,
-as devoluções e os checks funcionais congelados ficam salvos em disco. Um check já
-concluído não é repetido na retomada se a fonte permanece idêntica. Uma chamada de
-agente ou comando interrompido antes de confirmar sua conclusão pode ser repetido.
-O build preserva o init, o plan e arquivos existentes da aplicação. Histórico de comandos,
-saídas de agentes, resultados e cópias ficam em `.harness/build`, com logs separados por
-execução. Nenhum push ou publicação é realizado.
-
-### Recuperação do plan e do build
-
-Antes de encerrar o build, o Capivara2 confere uma entrega operacional: instalação
-sem runtimes herdados, build declarado e até dois smoke checks curtos
-dos comandos reais de início/importação. Isso não acrescenta uma suíte funcional
-global nem avaliação estética. Projetos npm com lock usam `npm ci` por padrão;
-receitas alternativas explícitas são documentadas e executadas em cópia limpa.
-Uma checagem de tipos separada é informativa quando o build e a inicialização passam;
-falhas desse diagnóstico ficam no README e nos comprovantes, sem gerar reparos infinitos.
-Erros que impedem compilar ou executar continuam em correção. Não há preferência
-obrigatória por strict, instanceof, ausência de any/casts ou organização de testes.
-
-Reparos de dependências, configuração e testes são decididos pela execução real do G3,
-sem uma aprovação textual adicional sobre a técnica adotada. Se o reparo altera código
-de negócio, a revisão recebe os conteúdos base/atuais, diff e hashes. Pedidos de contexto
-são atendidos pelo controlador sem repetir a escrita. Erros de uma versão anterior
-são identificados como históricos; não provam que a candidata corrigida continua errada.
-
-O runtime de conferência fica em um diretório temporário externo para que Node não
-encontre `node_modules` no projeto pai; Python sem ambiente declarado é conferido
-sem pacotes globais. Logs, comandos, resultados e checkpoints são registrados em
-`.harness/build/delivery`. Uma interrupção retoma os comandos já confirmados quando
-fonte, receita e ambiente continuam compatíveis, preservando todas as tasks prontas.
-
-O README recebe uma seção controlada com os pacotes/versões dos manifestos,
-pré-requisitos de sistema, comandos explícitos para instalação e manutenção e os
-procedimentos operacionais conferidos. Os comandos manuais acompanham o gerenciador
-de pacotes da plataforma analisada; quando necessário há também `install-manual.sh`.
-
-**Código concluído com instalação pendente:** se somente um pré-requisito externo
-não puder ser instalado automaticamente, o status principal é **Concluído — instalação
-pendente**, com `delivery_status=blocked` e `ready_to_run=false`. O relatório e o README
-explicam os pacotes faltantes. **Validar instalação** repete apenas a conferência
-pendente; não começa o projeto de novo. Isso não equivale a afirmar que a aplicação
-já está pronta para executar. Erros que impedem compilar ou executar continuam em
-correção automática e não recebem essa conclusão por pendência externa.
-
-O **build se recupera automaticamente durante a execução**, sem exigir um clique em
-Tentar novamente para erros recuperáveis do agente. Respostas JSON inválidas, citações
-que não correspondem à origem/ao código, falhas de comunicação do CLI e falhas recuperáveis
-da task são devolvidas com diagnóstico para correção, com espera progressiva e cancelável.
-Não há encerramento após uma quantidade fixa de tentativas. Cada retorno precisa passar
-pelos mesmos gates; repetir uma falha nunca equivale a aprovar a entrega.
-
-Ao repetir duas rejeições no mesmo gate, receber correção sem mudança de código ou
-contratos repetidamente inválidos, o harness chama um diagnóstico em contexto novo.
-Ele recebe o histórico, a reserva, a origem e os checks e decide entre corrigir código,
-ampliar reserva, reavaliar uma acusação ou reparar o instrumento de teste. O ciclo de
-recuperação tem uma identificação nova para evitar reutilizar uma revisão negativa
-antiga do cache. Esse diagnóstico não aprova a task e fica persistido para retomada.
-
-Escritor e auditor podem solicitar `scope_requests` com caminhos exatos e evidência
-da necessidade antes de editar os arquivos. O scheduler reserva esses caminhos com
-execução exclusiva e devolve a task ao escritor. Isso evita o impasse em que o auditor
-exige montar uma rota, mas o escritor só pode entregar um patch porque o arquivo de
-entrada está fora de `writes`.
-
-Cada task recebe um `brief.json` derivado de seu conteúdo aprovado, com os donos das
-demais unidades. Citações e requisitos globais continuam rastreáveis, sem transformar
-uma task de estrutura na implementação de todo o CRUD ou em geração de suítes.
-G3 prefere uma verificação mínima da funcionalidade entregue; browser e integração
-ampla só quando necessários à própria unidade.
-
-Uma falha G3 passa por diagnóstico: código incorreto volta ao escritor, enquanto bug
-do check/fixture/runner pode ser corrigido pelo verificador. O reparo precisa preservar
-o comportamento solicitado e receber uma revisão independente contra a origem e
-a falha observada, sem obrigação de manter a técnica ou a estrutura do teste antigo. A aprovação do reparo é seguida de execução real; nunca
-vale como aprovação da task. Versões anteriores, propostas, certificados e resultados
-ficam em `tasks/<id>/verification-repairs`. Uma transação interrompida é retomada sem
-regenerar a aplicação nem perder a versão de check aprovada.
-
-O auditor recebe um catálogo de referências aos requisitos e trechos reais dos arquivos.
-Ao citar esses IDs, o harness preenche as citações literais, evitando erros de transcrição.
-Uma avaliação inválida é corrigida pelo auditor e não vira uma ordem de refazer código
-correto. Se o auditor editar a fonte, a versão recebida é restaurada, a alteração fica
-arquivada e a avaliação é refeita. Auditorias interrompidas também são recuperadas.
-
-Quando uma task escreve um arquivo adicional, como `src/app.css` ou `package-lock.json`,
-o scheduler aguarda os outros workers terminarem e reserva os caminhos exatos para execução
-exclusiva. As versões de base, integradas e candidatas são preservadas; alterações concorrentes
-são conciliadas e conflitos voltam ao escritor. Todos os arquivos adicionais aparecem para
-o G2: ampliar a reserva não autoriza funcionalidades novas nem dispensa os gates G1–G3.
-As tarefas já concluídas são preservadas. Bloqueios reais de instalação continuam fornecendo
-instruções para intervenção manual, conforme a etapa de dependências.
-
-**Tentar novamente** e abrir o mesmo módulo em uma nova execução retomam o trabalho
-salvo. Isso também vale após cancelamento, falha do CLI, encerramento do processo
-ou queda de energia. Uma falha inesperada da execução aparece no dashboard e mantém
-o botão de recuperação disponível. O init continua sendo a exceção: executá-lo
-novamente reinicializa os artefatos, conforme seu fluxo original.
-
-Após atualizar a instalação, reabra `capivara2` no mesmo projeto e selecione `build`
-para carregar o código atualizado e retomar o checkpoint. Um processo que já estava
-aberto continua usando os módulos Python carregados no início da sua execução.
-
-No plan, recibos em `plan/control/operations` preservam as respostas validadas.
-O controlador reconstrói o estado localmente, sem chamar novamente os agentes para
-operações confirmadas, e segue da primeira operação pendente. Logs antigos de
-contexto/resposta também podem ser recuperados quando compatíveis com o contrato
-atual. Correções exatas já autorizadas são idempotentes e continuam exigindo revisão.
-Executar um plan já concluído preserva também o status do build.
-
-No build, `state.json` registra o gate pendente e a cópia isolada de cada task.
-O diretório `.harness` dessa cópia preserva a base, os scripts congelados e o diário
-de integração. Esse diário é gravado antes de substituir arquivos na raiz; se a
-integração for interrompida, a próxima execução pode concluí-la sem regerar código.
-Edições externas conflitantes são preservadas e indicadas para resolução.
-Quando a origem aprovada muda, o controle anterior é arquivado em
-`.harness/plan-history` ou `.harness/build-history`, conforme o módulo.
-
-### CLIs sem confirmação
-
-As permissões de execução são exclusivas do build; init e plan continuam documentais.
-Cada chamada inicia processo novo e não usa `--continue` ou `--session`.
-
-| CLI | Configuração usada |
-|---|---|
-| Codex | `--dangerously-bypass-approvals-and-sandbox` ([documentação oficial](https://learn.chatgpt.com/docs/developer-commands?surface=cli)) |
-| Claude | `--dangerously-skip-permissions` ([referência oficial](https://code.claude.com/docs/en/cli-reference)) |
-| OpenCode | `run --auto --standalone`; bloqueios explícitos continuam valendo ([permissões](https://opencode.ai/docs/permissions/)) |
-| AGY | `--dangerously-skip-permissions`, entrada/saída stream-json e schema ([modo headless](https://antigravity.google/docs/cli/headless/)) |
-
-Codex e OpenCode foram conferidos também pela ajuda dos executáveis locais. A validação
-real de geração e comandos desta etapa usa Codex; Claude e AGY exigem suas próprias
-instalações/autenticações. O OpenCode preserva regras explícitas de deny.
-
-Adaptadores personalizados de execução ficam separados dos adaptadores documentais:
-
-```toml
-[build_agents.agy]
-command = ["/caminho/para/seu-adaptador-build-agy", "--sua-flag-sem-confirmacao"]
-```
-
-Recebem JSON/schema no prompt em stdin, devem operar no cwd fornecido e devolver o JSON
-final. `CAPIVARA2_EXECUTION=build`, `CAPIVARA2_WORKSPACE`, `CAPIVARA2_ROLE`, modelo, effort,
-schema e caminho de saída identificam a chamada. O wrapper precisa configurar suas próprias
-permissões não interativas. Credenciais permanecem na configuração privada de cada CLI.
+A bolinha do escritor por thread registra a definição produzida e salva: não
+há uma chamada adicional ao escritor para cada task aprovada na primeira avaliação.
+Somente uma reprovação provoca uma chamada de correção da task correspondente. Na chamada inicial, quando
+as fases ainda não são conhecidas, o painel informa que o escritor está
+definindo o plano, sem inventar tasks ou porcentagens.
 
 ```text
-.harness/build/
-  source.json                   # origem aprovada, imutável durante a execução
-  state.json                    # mapa, progresso, árvore integrada e retomada
-  report.md                     # relatório após conclusão
-  manual-install.md             # pacotes e instruções se houver bloqueio
-  install-manual.sh             # recuperação manual, quando viável
-  control/                      # settings por execução, dependências e blueprint
-  tasks/<id>/                   # devoluções, checks e aprovação de cada task
-  checks/<id>/                  # scripts de verificação preservados
-  tools/                        # ferramentas internas adicionais do G3
-  work/<id>-<uuid>/             # cópias isoladas usadas pelos workers
-  log/                          # comandos, resultados, entradas e saídas reais
+.harness/dados/plano-original.md             resposta intacta do planejador
+.harness/dados/plano.md                      plano com títulos normalizados
+.harness/dados/plan-estado.json               fases, threads, estados e configuração da execução
+.harness/dados/plan/threads/task-N.M.md       definição individual da thread
+.harness/dados/plan/threads/task-N.M.g0.txt   resposta do G0, se habilitado
+.harness/dados/plan-erro.txt                  motivo de falha/interrupção, quando houver
 ```
 
-## Painel de execução
+Ao reabrir a TUI e selecionar PLAN, o painel carrega o estado salvo. Nada é
+executado automaticamente ao abrir. **Iniciar retoma um PLAN incompleto**,
+preservando as definições salvas e as aprovações já obtidas, sem gerar outro
+plano. Com gates habilitados, continua pelo G0 pendente/reprovado e pelas threads
+seguintes. Uma task reprovada retoma pela correção pendente, preservando o
+motivo e os contadores de tentativas. A retomada nunca reinicia o plano inteiro.
 
-O dashboard de cada módulo usa a marca **CAPIVARA**, mascote em PNG, fundo
-escuro e painéis ciano. A faixa superior mostra projeto, módulo, etapa, status e
-duração. Abaixo ficam o pipeline documental, o provedor atual com papel/modelo/effort,
-a telemetria e os eventos recentes.
+Com gates desligados na retomada, as definições já salvas contam como concluídas
+e as restantes são salvas a partir do mesmo plano, sem chamar G0. Reprovações
+anteriores não são convertidas em aprovação: seus arquivos são mantidos e o
+motivo fica também em `previous_error` no registro de progresso. `plan-erro.txt`
+pode continuar contendo o relato da interrupção anterior; o estado atual vem
+de `plan-estado.json`. A configuração selecionada vale para a retomada.
 
-A imagem fornecida pelo usuário fica em `harness/assets/capivara-engineer.png`,
-preservada sem redesenho nem alterações no arquivo. O cabeçalho usa a imagem
-proporcionalmente em terminais com gráficos Sixel ou Kitty. A negociação acontece
-antes de abrir a TUI; sem suporte gráfico, o mascote muda automaticamente para a
-arte ANSI `harness/assets/build-busto-40x13.ans`, fornecida pelo usuário.
-O arquivo original de 40 × 13 é preservado; sua exibição é ajustada proporcionalmente
-para 31 × 10 no cabeçalho atual, mantendo as cores e o enquadramento completo.
-O funcionamento do harness não depende de suporte a imagens.
+O PRD, o plano e as definições concluídas são conferidos antes de reutilizar
+o progresso; conteúdo alterado ou registro inconsistente é recusado, sem
+sobrescrever os arquivos. Se a chamada inicial não chegou a salvar um plano,
+Iniciar permite refazê-la, preservando eventual resposta parcial anterior.
+Uma execução concluída exige confirmação explícita para ser refeita, conforme
+o aviso de exclusão das fases subsequentes. Ao interromper a TUI, o progresso
+é salvo para a próxima retomada explícita. Não há banco de dados ou scheduler.
 
-No plan, o painel mostra fases aprovadas/total, tasks aprovadas/identificadas até o
-momento, fase atual, rodadas e revisões. Os totais de tasks podem aumentar enquanto
-as fases são decompostas ou quando o revisor identifica uma omissão. Não há métricas
-de entrevistas ou inferências nesse módulo.
+### Normalização determinística do Markdown
 
-No lugar do pipeline, o plan apresenta uma árvore rolável de fases e tasks, com
-**duas bolinhas por linha: criação (C) e validação (V)**. O círculo vazio aguarda;
-amarelo indica trabalho em andamento, verde indica conclusão e vermelho indica
-devolução do revisor. Uma nova redação põe a criação em amarelo, mantendo a validação
-vermelha até a nova revisão. A barra acima da árvore mostra a criação dos itens
-identificados; seu total acompanha a descoberta de tasks. A lista acompanha o item
-ativo e permite rolagem manual, sem perder a posição escolhida a cada atualização.
+Após salvar a resposta original e antes de identificar fases/tasks, o Python
+normaliza somente os títulos reconhecidos. Por exemplo:
 
-As informações vêm da execução real: perguntas/respostas no init, rodada, operações lógicas,
-tentativas de chamada aos CLIs, devoluções para correção e decisões internas inferidas.
-O provedor muda entre escritor e revisor conforme cada chamada. Tokens aparecem como
-“não medido”, pois o harness ainda não contabiliza esse consumo. O painel apresenta
-somente metadados operacionais; prompts, respostas e justificativas completas dos
-agentes continuam nos artefatos, sem serem copiados para a lista de eventos da tela.
-
-Em terminais largos, pipeline e provedor aparecem lado a lado. Em janelas menores,
-os painéis se reorganizam em uma coluna, com rolagem vertical e controles acessíveis
-por Tab. O cabeçalho se reduz quando necessário. As entrevistas continuam usando
-as telas de múltipla escolha durante o andamento do init.
-
-## Modelos e efforts
-
-O catálogo fica em [harness/harness.toml](harness/harness.toml). Codex, Claude, OpenCode e agy
-podem ser escolhidos para escritor e revisor. O CLI selecionado é iniciado
-diretamente ao executar o módulo; falhas de execução ou autenticação são registradas.
-
-Por padrão, Codex aproveita os modelos e efforts de
-`$CODEX_HOME/models_cache.json` ou `~/.codex/models_cache.json`, quando esse
-arquivo existe e é válido. Modelos ocultos no cache são ignorados. O cache é
-somente lido; se estiver ausente ou inválido, a TUI usa o catálogo TOML.
-
-Ao selecionar OpenCode, o wizard consulta os modelos habilitados e variantes de
-effort do CLI autenticado no contexto da pasta escolhida, usando
-`opencode api --standalone model.list`. CLIs anteriores usam a listagem
-`opencode models` como alternativa. IDs incluem o provedor (`provedor/modelo`)
-para preservar a distinção entre catálogos. A consulta não gera código nem inspeciona
-dependências da aplicação. Um cache breve guarda somente IDs, nomes e efforts;
-credenciais, headers e configuração da API não são copiados. Se a consulta falhar,
-o último catálogo válido pode ser usado; sem catálogo válido, a tela informa a falha
-e permite tentar novamente. Para usar apenas uma lista manual, configure
-`discover_cli = false` em `[providers.opencode]` e preencha `models`.
-
-Claude consulta o catálogo do próprio CLI pelo handshake `initialize`, sem enviar um
-prompt de inferência. O wizard usa os IDs resolvidos e os `supportedEffortLevels`
-informados pelo processo. AGY consulta `agy models`, agrupa as variantes da mesma
-família e apresenta apenas os efforts encontrados nessa listagem. Não há uma lista
-fixa de aliases/modelos. Essas consultas mantêm cache breve somente de ID, nome e efforts.
-Uma consulta ao catálogo não prova que a conta está autenticada ou tem saldo para gerar.
-
-Para uma lista manual, use `discover_cli = false` no provedor e cadastre os modelos.
-O identificador `default` deixa o CLI escolher o padrão, por exemplo:
-
-```toml
-[providers.claude]
-discover_cli = false
-models = [
-  { id = "seu-modelo", name = "Nome exibido", efforts = ["low", "high"] },
-]
+```text
+**## Fase 1 — Fundação**       → ## Fase 1 — Fundação
+**### Task 1.1 — Estrutura**   → ### Task 1.1 — Estrutura
 ```
 
-Os IDs e efforts desse exemplo são ilustrativos; use os valores suportados pelo
-seu CLI. Para substituir o cache do Codex por uma lista própria, defina
-`read_local_cache = false` em `[providers.codex]` e preencha `models`.
+Espaços extras nos títulos e linhas em branco são tolerados. Nomes, descrições,
+requisitos, conteúdo desconhecido e ordem das tasks são preservados. Blocos de
+código não são reinterpretados como títulos. Se não for possível interpretar
+a estrutura com segurança, o PLAN interrompe e mantém os dois Markdown para
+inspeção. Isso é tratamento de formato, não avaliação de qualidade, e não
+utiliza LLM, dependências extras, gates ou mecanismos de correção.
 
-Para usar outro arquivo de configuração:
+## BUILD: uma task por vez
 
-```bash
-capivara2 --config /caminho/harness.toml
+O fluxo segue `capivarinha/scripts_funcionais/build.sh` e os experimentos
+`build-gates.sh`, `g1.sh` e `g2.sh`: extrair uma task, chamar a CLI no projeto,
+verificar a entrega e avançar. O PRD e o hash do plano precisam corresponder ao
+INIT/PLAN concluídos. O escritor recebe somente a task atual como autorização,
+com PRD, contexto e dependências anteriores. Não há validação da fase inteira.
+
+Com gates habilitados, a ordem é **G0 → escritor → G1 → G2**. G0 examina a
+preparação; uma reprovação retorna ao mesmo escritor em modo de leitura para
+um esclarecimento local, salvo no controle do BUILD sem alterar PRD/PLAN.
+Uma mudança que exija outros requisitos/tasks deve informar
+`ALTERACAO_AMPLA_NECESSARIA`, suspendendo a execução para decisão do usuário.
+
+O escritor altera os arquivos reais na raiz e pastas do projeto. O G1 compara
+hashes com o inventário anterior à primeira tentativa da task, incluindo
+alterações acumuladas e exclusões. `.harness`, Git, dependências instaladas e
+caches não contam como entrega. Não depende de Git e não avalia qualidade.
+Tasks explicitamente de inspeção, sem exigência de escrever arquivos, podem
+concluir sem mudanças. G2 lê os arquivos reais e avalia somente a entrega da
+task, com os critérios e restrições aplicáveis, dependências e resultado G1.
+
+Reprovação válida de G1/G2 retorna ao escritor com o motivo concreto. Após a
+correção, G1 e G2 são reexecutados. Se o escritor sinalizar mudança relevante
+nas premissas com `PREMISSAS_G0_ALTERADAS`, G0 também reavalia antes do avanço.
+As instruções para esses marcadores ficam no prompt externo do escritor.
+Não há limite de tentativas, aprovação por contagem ou descarte do código.
+
+Erro do modelo/provedor, autenticação, conexão, timeout ou decisão inválida
+repete somente a chamada pendente, com o mesmo provedor/modelo/effort. O log
+distingue erro técnico de reprovação. Há uma espera assíncrona de 2 segundos
+entre erros de chamada, sem bloquear a TUI ou iniciar chamadas simultâneas.
+O escritor informa `ERRO_CHAMADA_MODELO` se uma falha de ferramenta impedir a
+entrega, provocando nova tentativa mesmo se a CLI tiver saído com código zero.
+Um projeto vazio e escolhas técnicas delegadas à task não são bloqueios de escopo.
+Prompt ausente/vazio, erro de armazenamento e bloqueio de escopo suspendem a
+execução com mensagem; não são tratados como reprovações corrigíveis.
+
+**Ctrl+C interrompe o BUILD** sem fechar a TUI; Ctrl+Q encerra. Cancelamento
+impede novas tentativas e preserva estado e código. Iniciar retoma a operação
+pendente, sem repetir tasks concluídas. O BUILD concluído só reinicia após a
+confirmação existente; reiniciar limpa seus controles, preservando INIT, PLAN
+e os arquivos reais do produto. Não há rollback nem limpeza automática do código.
+
+O painel é o mesmo do PLAN, com uma bolinha por fase e, por task, G0, Escritor,
+G1 e G2. Com gates desligados há somente Escritor: nenhuma chamada a G0/G2 nem
+inventário/comparação G1 é executada, e o sucesso da CLI conclui a task.
+A proibição de testes vale para escritor e validadores e permite compilação,
+typecheck e conferências pontuais sem criar suítes. Testes existentes permanecem.
+
+O registro segue o mesmo formato de fases/threads, em
+`.harness/dados/build-estado.json`; relatos, respostas dos gates e inventários
+por task ficam em `.harness/dados/build/`. As instruções ativas são:
+
+```text
+~/.config/capivara2ptn/prompts/BUILD.md
+~/.config/capivara2ptn/prompts/gates/g0-build.md
+~/.config/capivara2ptn/prompts/G2.md
 ```
 
-Há adaptadores nativos para Codex, Claude, OpenCode V2 e AGY nos módulos documentais
-e no build. OpenCode recebe o agente documental por configuração efêmera explícita,
-com ferramentas negadas; o build seleciona o agente nativo `build` e usa `--auto`.
-Isso evita depender da descoberta de um agente em uma pasta ignorada pelo Git.
-Consulte a [configuração do OpenCode](https://opencode.ai/v2/docs/config/).
+São lidas novamente a cada chamada. A instalação inicial não sobrescreve
+arquivos editados. INIT e PLAN mantêm seus prompts e fluxos anteriores.
 
-Claude usa modo print e `--json-schema`; AGY usa o protocolo `stream-json` com uma
-mensagem por chamada e `--json-schema`. Ambos priorizam `structured_output` quando
-presente. Isso evita tentar interpretar texto repetido como dois objetos JSON.
-O evento interno `finish` do AGY é aceito como protocolo de resposta quando seus
-parâmetros correspondem ao `structured_output` de um resultado `SUCCESS`. Ele não é
-uma ação sobre arquivos ou ambiente; eventos de ferramentas reais seguem bloqueados
-nos módulos documentais.
-No documental, ferramentas são desabilitadas/negadas. No build, Claude e AGY recebem
-`--dangerously-skip-permissions`. Cada chamada abre uma sessão nova, sem continue/resume.
-Referências: [CLI do Claude](https://code.claude.com/docs/en/cli-reference),
-[headless do AGY](https://antigravity.google/docs/cli/headless/).
+### Preparação obrigatória antes de produzir código e entrega do README
 
-Todos os processos recebem `cwd` e `PWD` apontando para a pasta escolhida da operação,
-inclusive consultas de modelos e comandos do build. Erros estruturados do CLI são
-diagnosticados mesmo com exit code zero e nunca são aceitos como resposta documental.
-Falhas de transporte dos CLIs são tentadas novamente também no init/plan, com espera
-cancelável; no plan, essas falhas não consomem as oportunidades de reparo documental.
+Novos PLANs começam com **Preparar ambiente de desenvolvimento** e terminam
+com **Documentar instalação e uso** (penúltima task) e a verificação técnica
+final. O PLAN recebe informações do host e define todas as dependências de
+runtime/desenvolvimento, versões, comandos de verificação e instalações
+compatíveis. Componentes opcionais como Tkinter não são presumidos disponíveis.
 
-É necessário instalar e autenticar os CLIs que serão usados. Para Claude, execute
-`claude auth login` quando o CLI informar que não há sessão autenticada. A autenticação
-continua no armazenamento privado do provedor. Também é possível substituir qualquer
-adaptador com um comando explícito, sem shell:
+A primeira task contém um bloco `preparacao-ambiente`, com `verificacoes`,
+`instalacoes` e `nao_aplicavel`. As listas de comandos usam `diretorio` e
+`comando`, como a verificação técnica. Os manifests necessários podem ser
+preparados pelo escritor; código funcional da aplicação fica fora dessa task.
+O executor verifica o ambiente, instala somente o que o PLAN declarou quando
+faltarem dependências e verifica novamente. Nenhuma task de produção é
+liberada antes de todas as verificações passarem e dos gates aplicáveis à
+preparação concluírem. Isso vale também com gates desligados.
 
-```toml
-[agents.agy]
-command = ["/caminho/para/seu-adaptador-agy"]
+Falha de instalação, ausência de permissão ou dependência ainda ausente
+interrompem o BUILD na preparação, com saída/retorno e progresso preservados.
+Não há aprovação textual que substitua as verificações nem produção de código
+para contornar a falta de uma dependência. O usuário pode resolver uma
+permissão/instalação bloqueada e retomar a mesma preparação. Os relatórios
+`task-N.M.environment-K.antes/instalacao/depois.json` e seus logs ficam em
+`.harness/dados/build/`, usando a persistência existente. Não há novo gate,
+auditor, banco ou sistema de descoberta de dependências; o PLAN é a autoridade.
+
+A task de documentação deve produzir README.md na raiz, com objetivo,
+pré-requisitos, instalação, comando exato de inicialização, uso, dados e
+limitações reais. Um README ausente/vazio mantém a chamada ao escritor pendente;
+o BUILD não declara entrega concluída sem o arquivo. Não é criado um binário
+empacotado que o projeto não previu: o README informa a forma real de iniciar.
+
+Planos antigos não são reescritos automaticamente. Produção/correção de código
+sem uma preparação declarada e verificada é bloqueada; é necessário atualizar
+o planejamento. Resultados antigos continuam disponíveis para consulta. A
+agenda já produzida recebeu README diretamente, sem alterar seus fontes ou PRD.
+
+### Task final de verificação técnica
+
+Novos planos terminam com **Verificação técnica da aplicação**, dependente das
+tasks necessárias. O PLAN define tecnologias, caminhos, scripts e comandos;
+não executa a verificação. A descrição da última task contém um único bloco:
+
+````markdown
+```verificacao-tecnica
+{"comandos":[{"diretorio":".","comando":"python3 -m py_compile main.py"}],"nao_aplicavel":null}
 ```
+````
 
-Esse adaptador recebe o pedido documental completo em stdin e precisa devolver
-somente o JSON correspondente em stdout, sem executar ferramentas ou criar código.
-As variáveis `CAPIVARA2_ROLE`, `CAPIVARA2_MODEL`, `CAPIVARA2_EFFORT` e
-`CAPIVARA2_SCHEMA` informam papel, modelo, effort e caminho do schema. O contexto
-anterior já acompanha a entrada; o adaptador não precisa implementar sessões.
+Esse comando é somente exemplo para um projeto Python com `main.py`. O PLAN
+escolhe o procedimento pertinente: compilação real para projetos compiláveis,
+sintaxe/carregamento/inicialização apropriada para interpretados e comandos
+para todos os componentes necessários. Os caminhos usados devem ser definidos
+nas tasks anteriores. O formato ausente ou inválido é informado, sem inventar
+um procedimento. Planos antigos não são reescritos automaticamente; refaça PLAN
+com confirmação para incluir a task em um novo planejamento.
 
-## Base MCP
+No BUILD, os comandos são executados diretamente, em sequência, com Bash
+`-e -o pipefail`, no diretório relativo indicado dentro do projeto. A saída
+completa de stdout/stderr e o código de retorno de cada comando ficam em
+`.harness/dados/build/task-N.M.technical-K.json` e nos respectivos arquivos
+`.comando-I.log`. A saída também acompanha os logs da TUI. As evidências de
+execuções anteriores são mantidas. Nenhuma aprovação textual substitui o
+resultado real dos comandos.
 
-Em **Base MCP**, a TUI apresenta as instâncias cadastradas pelo nome do recurso
-e a opção **Adicionar MCP**. Sem instâncias registradas, aparece somente a opção
-de adicionar. Cada cadastro é independente: duas instâncias podem usar o mesmo
-endereço e chaves de tenants diferentes.
+Uma falha segue para o G2 existente, com a saída original e os códigos reais.
+O mesmo escritor recebe essa evidência e a orientação do G2, corrige os fontes
+e o executor repete o procedimento do PLAN sem limite de tentativas. Nesta
+task final, pode corrigir arquivos de tasks anteriores para resolver erros de
+integração, sem reabrir/reexecutar essas tasks ou alterar suas aprovações.
+PRD, PLAN e comandos não são alterados para ocultar falhas. O G0 verifica a
+preparação, sem exigir que o código já passe antes dessa task de diagnóstico.
 
-O formulário solicita três campos:
+A task final permanece amarela e não conta como concluída durante correções e
+reexecuções. Com gates habilitados, G1/G2 continuam no fluxo existente; G1
+considera a natureza de inspeção, sem exigir alterações artificiais de arquivos.
+Com gates desligados, os comandos ainda são parte obrigatória da task, e a
+saída de falha volta diretamente ao escritor, sem chamar G0, G1 ou G2.
+Ctrl+C interrompe o processo e preserva saída parcial e progresso. Na retomada
+da verificação, os comandos são refeitos com os arquivos atuais; um parecer
+pendente não permite usar evidência antiga para concluir a task.
 
-- **Nome do recurso:** nome que identifica a instância na lista.
-- **Endereço do MCP:** URL completa, incluindo protocolo, porta e caminho.
-  O endpoint informado para o doc-center atual é
-  `http://doc-center.rbtecnologia.net.br:7777/mcp`; esse endereço não é fixado
-  pelo código.
-- **Chave API de autenticação:** token Bearer, digitado em campo oculto.
-  Também aceita `env:NOME_DA_VARIAVEL` ou `@/caminho/arquivo-da-chave`.
-  Referências de arquivo relativas partem da pasta em que o Capivara2 foi aberto
-  e são salvas como caminhos absolutos.
+Quando não existe verificação executável aplicável, o PLAN deve registrar
+`{"comandos":[],"nao_aplicavel":"Justificativa concreta"}` no mesmo bloco.
+O resultado será **não aplicável**, sem executar comandos nem simular aprovação
+por compilação. Não há G3, auditoria global, validação independente da fase,
+suítes de testes ou novos agentes.
 
-Enter avança entre os campos. No terceiro campo, Enter valida e salva; o botão
-**Validar e salvar** e o atalho **Ctrl+S** fazem a mesma operação. O cadastro só
-é gravado após inicializar a conexão MCP e consultar as listagens autenticadas.
-Se houver falha, os campos permanecem disponíveis para correção e nova tentativa.
-Uma instância válida sem projetos também pode ser cadastrada.
+### Executável indisponível na verificação técnica
 
-As instâncias ficam em `~/.config/capivara2/mcps.json`, respeitando
-`XDG_CONFIG_HOME`. O arquivo é gravado de forma atômica com permissão `0600`;
-uma pasta de configuração nova é criada com `0700`. Chaves digitadas diretamente
-são guardadas nesse arquivo local. Para manter o segredo fora dele, use uma
-referência de ambiente ou de arquivo. Essa configuração não faz parte do Git.
+O executor tenta primeiro o comando literal do PLAN. Se ele retornar 127 e
+`python` estiver ausente no PATH daquele diretório, há uma substituição
+restrita: `python3` para os módulos padrão `compileall` e `py_compile`, quando
+o contexto tecnológico do PLAN declara Python 3. O runtime alternativo é
+consultado de verdade para confirmar a versão e atender à versão mínima
+indicada. Apenas o primeiro executável é trocado; módulo, flags, caminhos e
+demais argumentos permanecem intactos.
 
-É possível escolher outro arquivo com `CAPIVARA2_MCP_CONFIG` ou com a flag,
-que tem precedência:
+Isso não usa LLM para descobrir ferramentas, não cria alias/shim, não instala
+pacotes e não modifica fontes, PRD ou PLAN. Não há equivalência presumida para
+outros runtimes, comandos compostos/expansões de shell ou projetos Python 2.
+Um executável originalmente disponível é preservado, inclusive quando sua
+verificação retorna erro real de sintaxe/compilação.
 
-```bash
-capivara2 --mcp-config /caminho/privado/mcps.json
-```
+A alternativa é executada pelo próprio executor, com saída e retorno reais.
+O relatório registra `comando_previsto`, `comando_executado`, a versão e o
+motivo em `substituicao`, além das duas `tentativas`. Os logs originais e os
+`.alternativo.log` ficam preservados. O retorno efetivo da alternativa determina
+se a verificação passou; se ela falhar, a realimentação existente continua.
+G2 recebe essa evidência e não exige identidade literal do nome do executável.
+A tentativa inicial 127 não invalida uma alternativa equivalente bem-sucedida;
+texto do escritor e sucesso de comandos arbitrariamente diferentes não são
+aceitos como prova.
 
-Ao selecionar uma instância, a TUI consulta os projetos expostos por
-`resources/list` e `prompts/list`, seguindo a paginação quando houver. O contrato
-atual do doc-center foi preservado: projetos sem recursos ou prompts publicados
-não aparecem. As permissões da chave determinam o tenant e os projetos visíveis.
-O menu permite atualizar a listagem e alterar os dados de uma conexão existente.
+### Chamadas às CLIs
 
-Ao escolher o projeto, o Capivara2 carrega o pedido completo, os documentos
-selecionados para aquele projeto e seus arquivos de apoio, incluindo conteúdo
-binário. Skills, hooks e memórias permanecem separados no contexto da sessão.
-O acervo geral que o projeto não selecionou e o histórico de conversas não são
-importados. Um prompt vazio ou uma falha ao ler qualquer recurso interrompe o
-avanço, permitindo corrigir ou tentar novamente. Após carregar tudo, o fluxo
-segue para a escolha do escritor e do revisor.
+Nos fluxos de INIT/PLAN, cada rodada inicia um processo novo, recebe instruções/dados por stdin e envia
+eventos/saída para o log sem bloquear a TUI. Nenhuma sessão é retomada. Modelo e
+effort são os selecionados na interface; Default não adiciona um override.
 
-A integração usa o [SDK oficial MCP para Python](https://github.com/modelcontextprotocol/python-sdk)
-com transporte HTTP, incluindo respostas JSON e SSE. O transporte e o cadastro
-de instâncias são separados do adaptador do contrato documental do doc-center.
-Os hooks são carregados como conteúdo documental; o init não os executa.
-Ao iniciar o módulo, textos e anexos são preservados em `.harness/context`, sem
-copiar a chave API para os artefatos do projeto. Anexos binários são guardados
-como referências, sem presumir um conteúdo que o agente não observou.
+| CLI | Mecanismo |
+| --- | --- |
+| Codex | `exec --json --sandbox read-only`, modelo via `-m`, effort via `model_reasoning_effort`; ferramentas de shell, apps, subagentes e perguntas desativadas. |
+| Claude | `--print --output-format stream-json`, `--tools ""`, sem MCP, em modo de leitura; modelo/effort por flags próprias. |
+| Agy | `--input-format stream-json --output-format stream-json`, uma mensagem por processo; `--mode plan` e regras `permissions.deny` via `--settings`. |
+| OpenCode V2 | `run --standalone --format json --agent plan`; modelo `provider/model#effort`, com regras/políticas inline que negam ferramentas. |
 
-## Verificação
+`plan` nessas flags é o modo de permissão da CLI; não deve ser confundido com o
+módulo PLAN da CAPIVARA2PTN. Nesses fluxos textuais, o Python salva as respostas e as CLIs não escrevem arquivos.
+Uma tentativa de ferramenta no fluxo de eventos interrompe a chamada, em vez
+de abrir perguntas internas ou criar outro executor. CLI ausente, erro, modelo
+ou effort rejeitado interrompem a execução; não há troca silenciosa de modelo.
 
-```bash
-.venv/bin/python -m unittest discover -s tests -v
-```
+No BUILD, o mesmo adaptador usa o cwd e `$PWD` do projeto e permite ferramentas conforme a operação: escritor
+com escrita e validadores/preparação em leitura. Codex usa `workspace-write`
+para implementar e `read-only` para validar, com shell e code-mode host ativos.
+Claude usa `acceptEdits` e ferramentas de arquivo/Bash para escrever, e somente
+Read/Glob/Grep para validar. Agy usa `auto` com permissões explícitas de
+read_file/write_file/command para escrever e `plan` sem escrita/comandos para
+validar. OpenCode usa os agentes nativos `build`/`plan`, permissões V2 por ação
+e ferramentas aninhadas com `execute`. Perguntas internas e subagentes ficam
+fora do fluxo. Erros de chamada no BUILD têm as novas tentativas descritas acima.
 
-Os testes percorrem a TUI por teclado, verificando prompt com múltiplas linhas,
-Ctrl+D, arquivos, edição da pasta, retorno entre telas, os quatro provedores,
-revisor compartilhado ou independente e a execução documental do `init`.
-Também verificam cadastro e edição de MCPs, persistência e permissões do arquivo,
-falhas de autenticação, isolamento entre tenants no mesmo endereço, paginação,
-respostas SSE, arquivos binários e importação completa sem material não selecionado.
-Os testes do init focam no documento: preservação do pedido original, fase 0 e
-fases executáveis, decisões obrigatórias sobre stack/ferramentas, lacunas resolvidas,
-devolução de desvios/inviabilidade e aprovação explícita. Não testam a aplicação
-solicitada nem verificam ferramentas do ambiente.
+Referências de permissões: [Codex](https://learn.chatgpt.com/docs/permissions),
+[Claude](https://code.claude.com/docs/en/permissions) e
+[OpenCode V2](https://opencode.ai/v2/docs/permissions), além do help das CLIs locais.
 
-Os testes do plan verificam pré-requisito e integridade do init, preservação das
-fases, contexto vazio por chamada, envio de uma única task ao escritor, devolução
-pontual de divergências, inclusão e revisão de omissões, cancelamento, reexecução
-e liberação do build somente depois de todas as aprovações documentais.
+## Origem do prompt (somente INIT)
 
-As regressões de revisão incluem remoções enviadas incorretamente ao escritor,
-atribuições duplicadas, divisão/consolidação com IDs estáveis, reparos em lote,
-revisão limitada ao recorte, rejeições contraditórias, reavaliação sem aprovação
-automática e preservação de aprovações de versões intactas.
+O campo **Origem do prompt** aparece exclusivamente no INIT. No PLAN e no
+BUILD toda a área fica oculta, preservando os dados do INIT em memória.
+Nenhum pedido inicial é solicitado para esses módulos: PLAN consome o PRD final do INIT; BUILD consome as fases/tasks do PLAN concluído.
 
-As regressões de contratos cobrem devolução do mesmo erro com outra redação,
-exigências contrárias a um aceite vigente, mudanças sobre versão antiga, correções
-vagas, falha de JSON repetida, escritor que ignora o patch, classificação de QA com
-redações diferentes, partições mistas sem perda de texto e certificados adulterados.
-Nenhuma dessas falhas libera o build ou produz aprovação por tentativas.
+- **Manual:** caixa multilinha para digitar ou colar o pedido livremente.
+- **Arquivo:** caminho e botão de seleção. Caminhos relativos usam o cwd
+  capturado na abertura; selecionar um arquivo não lê nem modifica seu conteúdo.
+- **Servidor MCP:** seleção de servidor, botões Adicionar/Remover/Consultar,
+  seleção de projeto e uma prévia somente de leitura do pedido.
 
-Os testes do build exercitam instalação automática e bloqueada, recuperação manual,
-G1 sem entrega, rejeições específicas de G2, falhas reais de G3, comparação de stdout,
-congelamento de verificações, validação sem alteração de fonte, reservas conflitantes,
-execução serial/paralela, retomada, cancelamento e wizard/dashboard responsivos.
+Alternar a origem preserva texto manual, caminho, servidor, item e pedido
+carregado. Os demais campos de configuração continuam independentes. O card
+de configuração permite rolagem quando os controles não cabem no terminal.
+
+O modal Adicionar pede nome, URL HTTP/HTTPS e token Bearer opcional, mascarado.
+Conexões são persistidas em `~/.config/capivara2ptn/mcp.json` (ou em
+`$XDG_CONFIG_HOME/capivara2ptn/mcp.json` quando a variável é absoluta), com
+diretório `0700`, arquivo `0600` e gravação atômica. O token é armazenado nesse
+arquivo privado, fora dos projetos, e não aparece em logs, representações de
+conexões ou mensagens de erro. URLs com credenciais, query ou fragmento são
+recusadas. Redirecionamentos não encaminham a credencial para outro endpoint.
+A configuração da Capivara original não é modificada ou importada automaticamente.
+
+Consultar inicia uma sessão MCP e lista os recursos, com paginação.
+Projetos são deduzidos dos URIs `capivara://<projeto>/…`, excluindo `geral`.
+O seletor mostra somente os nomes dos projetos, sem prefixos ou entradas de
+prompts separados. Selecionar um projeto carrega automaticamente seu pedido.
+O pedido é lido do recurso `/pedido`, com fallback para o prompt de mesmo nome,
+conforme a referência original. Conteúdo binário não é convertido em pedido.
+Nada é enviado a modelos nem gravado no servidor.
+
+As consultas HTTP/HTTPS usam JSON-RPC, inicialização, sessão, Bearer e respostas
+JSON ou SSE, em tarefas de fundo. Há prazo de 20 segundos por chamada e limite
+de 8 MiB por resposta. Uma consulta antiga é cancelada/descartada ao trocar de
+servidor ou item; uma chamada de rede em andamento pode levar até seu timeout
+para encerrar. Erros HTTP, falhas de conexão e ausência de pedido são informados
+sem incluir corpos remotos ou segredos. Não há reconexão automática ou retries.
+
+Referências consultadas no
+[capivara-harness](https://github.com/RBTecNet/capivara-harness):
+[cliente MCP](https://github.com/RBTecNet/capivara-harness/blob/main/packages/core/src/mcp/client.ts),
+[biblioteca](https://github.com/RBTecNet/capivara-harness/blob/main/packages/core/src/mcp/library.ts),
+[endpoint](https://github.com/RBTecNet/capivara-harness/blob/main/packages/core/src/mcp/endpoint.ts)
+e [configuração do Doc-Center](https://github.com/RBTecNet/capivara-harness#conectar-ao-doc-center-autenticado).
+
+## Provedores e modelos
+
+Provedor oferece Codex CLI, Claude CLI, Agy CLI e OpenCode CLI, nessa ordem.
+Ao trocar de provedor, a seleção anterior de modelo é limpa e a nova consulta
+ocorre em segundo plano. Effort mantém suas opções e seleção independentes.
+
+- **Codex:** `codex app-server`, protocolo local por stdio, com `initialize`,
+  `initialized` e `model/list` paginado. Não cria conversas ou turnos.
+- **Claude:** sem listagem não interativa no CLI instalado. Conforme solicitado,
+  oferece Opus (`opus`), Sonnet (`sonnet`), Fable (`fable`) e Haiku (`haiku`).
+  São aliases aceitos pelo CLI, não um catálogo consultado da conta.
+- **Agy:** `agy models`, cuja saída tem ID e nome separados por tabulação.
+- **OpenCode:** `opencode models`, preservando os IDs completos
+  `provedor/modelo`, inclusive os modelos retornados para OpenRouter.
+
+O Select Modelo apresenta apenas entradas retornadas pela CLI, além dos
+aliases do Claude definidos acima. No Claude ou se a descoberta não produzir
+modelos, a opção **Informar ID manualmente…** abre um campo de texto. O ID
+informado passa a ser a seleção atual; cancelar preserva a seleção anterior.
+IDs manuais e acesso efetivo à inferência não são validados nesta etapa.
+
+CLI ausente, falha, formato não reconhecido, lista vazia ou consulta acima de
+20 segundos produzem um aviso no log e liberam a entrada manual. A troca de
+provedor cancela a consulta anterior e descarta resultados antigos. Não há
+consultas diretas a APIs, autenticação nova ou lista inventada de modelos.
+
+Mecanismos conferidos nas versões locais: Codex 0.166.0, Claude Code 2.1.314,
+Agy 1.4.12 e OpenCode 2.2.2. Versões com outros formatos podem exigir ajustes
+no adaptador e, enquanto isso, permitem informar o ID manualmente.
+Referências: [Codex App Server](https://learn.chatgpt.com/docs/app-server),
+[configuração de modelos do Claude](https://support.claude.com/en/articles/11940350-claude-code-model-configuration)
+e [modelos do OpenCode](https://opencode.ai/v2/docs/models/).
+
+## Recursos e limites desta etapa
+
+O PNG original é copiado para `src/capivara2ptn/assets/mascote.png` e incluído
+no pacote, junto de `app.tcss`. É carregado usando `importlib.resources` e
+Pillow, com a abordagem `textual_image.widget.Image` do experimento `teste.py`.
+O renderizador da biblioteca se adapta aos recursos do terminal; não há mascote ASCII.
+
+`src/capivara2ptn/prompts/` distribui os modelos iniciais dos prompts do INIT
+e G0 INIT, além de PLAN e G0 PLAN. BUILD e G2 usam os arquivos externos editáveis correspondentes.
+G1 é determinístico e não usa prompt ou LLM.
+
+Esta versão usa CLIs para descobrir modelos e executar INIT/G0 INIT e PLAN/G0
+por thread, e MCP somente para listar/ler pedidos. BUILD implementa somente G0, G1 e G2, sem outros gates. Os dados do INIT são salvos somente no diretório de trabalho; conexões
+MCP e instruções editáveis ficam na configuração global. As CLIs podem manter seus
+próprios caches e serviços durante a listagem.
+O diretório capturado é a referência para os arquivos de projetos em etapas
+futuras; os recursos da instalação são independentes dele. Os arquivos
+originais `teste.py` e `assets/mascote.png` são preservados.
+
+## Verificação desta entrega
+
+Instalação não editável verificada com Python 3.14, Textual 6.12.0,
+textual-image 0.14.2 e Pillow 12.3.0. Foram conferidos sintaxe, abertura pelo
+entry point fora do repositório, PNG e prompts instalados, cwd preservado,
+navegação por teclado, modais e layouts de 120×42 e 80×24. O diretório de
+trabalho permaneceu vazio na inicialização sem executar INIT. Não foram criados
+testes automatizados.
+
+Na seleção dinâmica, foram conferidos os quatro provedores, IDs originais,
+modelos do OpenRouter, entrada manual com confirmação/cancelamento, ausência
+de CLI, troca rápida de provedor e interação com Effort durante a consulta.
+
+Na origem do prompt, foram conferidos os três modos, preservação do texto e do
+caminho ao alternar origens/módulos, cadastro e remoção pela TUI, persistência em
+outro processo e permissões `0700`/`0600`. O Doc-Center já configurado na máquina
+foi cadastrado separadamente na CAPIVARA2PTN e utilizado somente para listar e
+ler projetos/prompts reais; a configuração original permaneceu intacta. Também
+foram verificadas falha de conexão, resposta 401 sem exposição do token e
+ausência do segredo nas capturas/logs. Não foram criados testes automatizados.
+A lista foi simplificada para oferecer somente projetos e buscar automaticamente
+o pedido/prompt correspondente, sem expor o catálogo de prompts no seletor.
+
+O INIT completo foi executado manualmente com Codex CLI, modelo `gpt-6-luna` e
+effort Low: pergunta pelo modal, resposta persistida, `CONCLUIDO`, chamada
+separada para o PRD, chamada independente para G0, aprovação, diálogo de sucesso
+e seleção de PLAN sem executá-lo. Arquivo de G0 ausente/vazio e decisões ambíguas
+foram conferidos sem aprovação automática. Os adaptadores de Claude, Agy e
+OpenCode usam as flags/protocolos das versões locais e documentação oficial;
+o fluxo completo com esses três provedores ainda não foi verificado.
+
+As opções foram alteradas pelos toggles, preservadas entre módulos e carregadas
+após reiniciar. Outro INIT real, com gates desligados e proibição de testes
+ligada, gerou o PRD sem executar/criar resultado de G0 e informou esse desvio
+explicitamente. Alterar as opções não modificou o PRD já gerado. Um erro real
+de modelo não suportado foi propagado pela CLI. Os prompts editáveis não foram
+modificados para implementar as opções e nenhum teste automatizado foi criado.
+
+O PLAN foi executado manualmente com Codex a partir de um PRD real do INIT:
+3 fases e 7 threads concluídas com 7 G0 individuais. Outra execução com gates
+desligados concluiu sem campos/bolinhas/arquivos de G0. Em diretório e prompts
+isolados de verificação, uma definição que contrariava o PRD foi reprovada pelo
+G0. Essa conferência da versão anterior foi complementada pelo ciclo de
+realimentação descrito abaixo.
+
+Foram conferidos os estados derivados das fases, recarga do painel após
+reiniciar, disposição em 130×44/110×32/80×30, preservação do PRD, os exemplos de
+normalização Markdown em negrito, conteúdo desconhecido preservado e erro em
+estrutura/dependências inseguras, sem reordenar tasks. G0 INIT permaneceu
+inalterado. Não foram criados testes automatizados; outros provedores não foram
+revalidados ponta a ponta nesta entrega.
+
+A retomada explícita foi conferida em cópias de um PLAN real interrompido na
+thread 2.1: com gates desligados, reaproveitou 6 definições, salvou as 17 restantes
+e concluiu 23 threads/5 fases sem chamar planejador ou G0. PRD, plano, definições
+anteriores e relatórios G0 foram preservados. Com gates habilitados, as 5
+aprovações anteriores foram mantidas e a próxima validação permaneceu na thread
+2.1. A pasta original não foi modificada durante essa verificação.
+
+A realimentação foi conferida com Codex em uma cópia de projeto real: G0
+reprovou a task 2.1, o escritor corrigiu apenas essa task e G0 aprovou na segunda
+avaliação, avançando até concluir as 7 threads. Os hashes do PRD, das definições
+e das aprovações anteriores permaneceram iguais. Um modelo inexistente provocou
+falha real da CLI após uma chamada, sem correção nem repetição automática.
+
+A migração para `.harness` foi conferida preservando arquivos desconhecidos em
+`dados/` do produto. Na TUI foram verificados PLAN após INIT concluído, BUILD
+após PLAN concluído, cancelamento do aviso e confirmação sem exclusão antes de
+iniciar. Em cópias isoladas, refazer PLAN preservou os hashes do INIT e refazer
+INIT removeu os resultados subsequentes; configuração e arquivos do produto
+foram preservados. Gates desligados concluíram uma retomada sem chamadas ao
+modelo, mesmo com correção pendente. Não foram criados testes automatizados.
+
+O BUILD foi conferido manualmente com Codex CLI, `gpt-6-luna`, effort Low:
+7 tasks/3 fases concluídas na TUI com gates; outra execução concluiu com 7
+chamadas somente ao escritor, sem respostas de validadores ou inventários G1.
+Em cópia isolada, uma preparação contrária ao PRD foi corrigida após G0 e uma
+implementação com login/rede indevidos foi reprovada pelo G2, corrigida e
+aprovada. O G1 também detectou ausência de mudanças e reconheceu correções
+acumuladas. Cancelamento e retomada pelo G2 pendente preservaram as tentativas
+e aprovações das duas tasks anteriores. Erro real de modelo indisponível repetiu
+a mesma operação, sem avanço ou troca de modelo, e parou ao cancelar.
+PRD, PLAN e seus artefatos mantiveram os hashes. Nenhum teste automatizado foi
+criado. O fluxo completo dos outros três provedores não foi revalidado; os
+adaptadores de leitura/escrita usam o help local e as permissões de cada CLI.
+
+Arquivos desta implementação: `build_flow.py`, `build_g1.py`, `providers.py`,
+`app.py`, `plan_panel.py`, `plan_state.py`, `prompt_files.py`, `workspace.py`,
+`dialogs.py`, `app.tcss`, `prompts/BUILD.md`, `prompts/G2.md`,
+`prompts/gates/g0-build.md` e este README. Os prompts ativos do BUILD ficam na
+configuração global; prompts editáveis de INIT/PLAN foram preservados.
+
+Na verificação técnica final, um novo PLAN real incluiu a última task com
+procedimento e dependências explícitos. Em cópias de projeto já executado,
+`node --check` detectou uma falha real de sintaxe: retorno 1, G2 com diagnóstico
+objetivo, correção de um arquivo de task anterior pelo escritor e nova execução
+com retornos zero. A TUI concluiu 8 tasks/4 fases; as aprovações anteriores,
+PRD e PLAN foram preservados. O modo sem gates repetiu somente comandos e
+escritor, sem validadores. Também foram conferidos compilação C real, execução
+do binário, não aplicabilidade explícita e cancelamento de comando com saída
+parcial e retorno -15, sem executar o comando seguinte. Não foram criados testes
+automatizados. O fluxo com modelos foi verificado com Codex; os demais
+provedores não foram revalidados integralmente.
+
+Arquivos deste ajuste: `technical_verification.py`, `plan_flow.py`,
+`build_flow.py`, `build_g1.py`, `plan_state.py`, `plan_panel.py`, os prompts
+`plan.md`, `BUILD.md`, `G2.md`, `gates/g0-plan.md`, `gates/g0-build.md` e README.
+Os trechos novos também foram acrescentados às cópias globais ativas,
+preservando o conteúdo editado pelo usuário. INIT e G0 INIT não foram alterados.
+
+Escritor/auditor e cronômetros foram conferidos na TUI com Codex `gpt-6-luna`
+no escritor e Claude `sonnet` no auditor, incluindo effort Low do escritor e
+Medium do auditor. INIT, PLAN e BUILD concluíram com tempos separados,
+congelados antes dos diálogos de conclusão. O modo sem gates concluiu sem
+modelo de auditor selecionado e sem arquivos/chamadas de validadores. A pausa,
+reabertura e retomada preservaram o acumulado do BUILD, sem contar o intervalo
+parado; o formato foi conferido também em 80×30. Nenhuma suíte de testes ou
+dependência nova foi criada e os prompts Markdown foram preservados.
+
+Arquivos deste ajuste: `project_config.py`, `module_clock.py`, `app.py`,
+`app.tcss`, `providers.py`, `init_flow.py`, `plan_flow.py`, `build_flow.py` e README.
+
+A realimentação com papéis independentes também foi executada: Claude/Sonnet
+reprovou uma falha real de sintaxe, Codex corrigiu o arquivo e Claude aprovou
+a revalidação (3 chamadas do auditor e 1 do escritor). Na TUI, confirmar
+Refazer PLAN sem iniciar preservou os tempos; iniciar a reexecução zerou PLAN,
+limpou BUILD e preservou exatamente o tempo do INIT.
+
+O loop da Task 5.1 foi reproduzido a partir dos registros reais de
+`teste_capivara2/desktop`: 32 verificações retornaram 127 porque `python` não
+existia, e G2 recusou `python3` por exigir o nome literal. Em cópia do projeto,
+a execução 33 registrou o comando original com 127, confirmou Python 3 no
+runtime alternativo e executou `/usr/bin/python3 -m compileall -q main.py agenda`
+com retorno zero; G2 aprovou e nenhuma nova chamada ao escritor foi necessária.
+Hashes das fontes, PRD e PLAN permaneceram iguais. Sintaxe inválida continuou
+retornando 1, contexto Python 2 não foi convertido e comandos originalmente
+disponíveis continuaram sendo usados diretamente. O projeto original foi
+somente consultado. Nenhum teste automatizado ou dependência foi acrescentado.
+
+Arquivos desse ajuste: `technical_verification.py`, uma passagem de contexto em
+`build_flow.py`, orientações externas `G2.md`/`BUILD.md` e README. Os ajustes de
+auditor independente e cronômetros foram mantidos.
+
+Na preparação/README obrigatórios, um PLAN real para a agenda declarou
+Python, SQLite, Tkinter e a instalação Ubuntu de python3-tk. O suporte Tkinter
+foi instalado durante a preparação, e a conferência real de imports passou.
+Outra execução instalou uma dependência local de desenvolvimento somente no
+projeto, repetiu a verificação com sucesso e só então criou main.py; a ordem
+foi conferida pelos relatórios e horários dos arquivos. O BUILD concluiu as
+4 tasks e entregou README.md. Com uma instalação indisponível, parou na
+primeira task: 0/4 concluídas, nenhuma chamada de produção e nenhum main.py.
+As verificações foram feitas sem criar suítes de testes automatizados.
+
+Arquivos deste ajuste: `delivery.py`, `plan_flow.py`, `build_flow.py`,
+`build_g1.py`, `plan_state.py`, `plan_panel.py`, um rótulo de progresso em
+`app.py`, prompts editáveis e README. A documentação da agenda foi criada em
+`teste_capivara2/desktop/README.md`; sua importação do ponto de entrada foi
+conferida, sem abrir a janela nem alterar o banco de dados.
+
+O fluxo completo foi conferido também na TUI com gates habilitados:
+preparação, produção, README e verificação final concluíram 4/4 tasks. A
+produção continuou condicionada à evidência real do ambiente e aos gates da
+task de preparação. O cronômetro e as bolinhas existentes foram preservados.

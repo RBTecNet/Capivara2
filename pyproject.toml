@@ -3,17 +3,22 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "capivara-harness"
+name = "capivara2ptn"
 version = "0.1.0"
-description = "Wizard TUI de inicialização do harness"
+description = "Fundação instalável e interface TUI da CAPIVARA2PTN"
+readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["textual>=6,<7", "mcp>=1.30,<2", "httpx>=0.28,<1", "pydantic>=2.12,<3", "textual-image[textual]>=0.12,<0.13"]
+dependencies = [
+    "textual>=6.12,<7",
+    "textual-image>=0.14.2,<0.15",
+    "Pillow>=11,<13",
+]
 
 [project.scripts]
-capivara2 = "harness.__main__:main"
+capivara2ptn = "capivara2ptn.__main__:main"
 
 [tool.setuptools.packages.find]
-include = ["harness*"]
+where = ["src"]
 
 [tool.setuptools.package-data]
-harness = ["*.toml", "assets/*.png", "assets/*.ans"]
+capivara2ptn = ["*.tcss", "assets/*.png", "prompts/*.md", "prompts/gates/*.md"]
