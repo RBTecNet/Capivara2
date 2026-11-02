@@ -54,6 +54,7 @@ from capivara2ptn.reverse_ui import ReverseController, ReverseControls, ReverseP
 from capivara2ptn.init_resume import pending_init_path
 from capivara2ptn.init_resume_ui import restore_pending_init, refresh_init_resume_button
 from capivara2ptn.change_ui import ChangeController, ChangeControls, ChangePanel
+from capivara2ptn.rea_ui import ReaController, ReaControls, ReaPanel
 
 LogKind = Literal["sistema", "executor", "sucesso", "erro"]
 MANUAL_MODEL = object()  # Ação da interface; nunca é um ID de modelo.
@@ -104,6 +105,7 @@ class CapivaraApp(App[None]):
         self._clock_error_reported = False
         self.reverse = ReverseController(self)
         self.change = ChangeController(self)
+        self.rea = ReaController(self)
         # Recursos vêm da instalação; nunca dependem do cwd do usuário.
         with files("capivara2ptn").joinpath("assets/mascote.png").open("rb") as stream:
             with PillowImage.open(stream) as image:
@@ -128,6 +130,7 @@ class CapivaraApp(App[None]):
                         yield RadioButton("BUILD", disabled=True, id="module-build")
                         yield RadioButton("REVERSE", id="module-reverse")
                         yield RadioButton("CHANGE", id="module-change")
+                        yield RadioButton("REA", id="module-rea")
                     yield Label("Provedor · escritor", classes="field-label")
                     yield Select(
                         PROVIDERS,
@@ -160,6 +163,7 @@ class CapivaraApp(App[None]):
                     yield PromptSource(self.working_directory)
                     yield ReverseControls()
                     yield ChangeControls()
+                    yield ReaControls()
                     yield Static("INIT · entrevista, PRD e G0", classes="muted", id="scope")
                     yield Button("Iniciar", variant="primary", id="start")
 
@@ -177,6 +181,7 @@ class CapivaraApp(App[None]):
                     yield PlanPanel(id="plan-panel", classes="card")
                     yield ReversePanel()
                     yield ChangePanel()
+                    yield ReaPanel()
                     with Vertical(id="log-card", classes="card"):
                         yield Static(
                             "[cyan]Sistema[/]  [magenta]Executor[/]  [green]Sucesso[/]  [red]Erro[/]",
@@ -230,9 +235,13 @@ class CapivaraApp(App[None]):
         self.restore_project_phase()
         self.reverse.mount()
         self.change.mount()
+        self.rea.mount()
         self.set_interval(1, self.update_elapsed)
 
     def update_elapsed(self, *, checkpoint: bool = True) -> None:
+        if self.rea.selected():
+            self.rea.tick()
+            return
         if self.change.selected():
             self.change.tick()
             return
@@ -557,6 +566,9 @@ class CapivaraApp(App[None]):
                 self.start_pressed()
 
     def apply_module_view(self, button: RadioButton) -> None:
+        self.rea.show(button.id == "module-rea")
+        if button.id == "module-rea":
+            return
         self.change.show(button.id == "module-change")
         if button.id == "module-change":
             return
@@ -647,6 +659,9 @@ class CapivaraApp(App[None]):
 
     @on(Button.Pressed, "#start")
     def start_pressed(self) -> None:
+        if self.rea.selected():
+            self.rea.start()
+            return
         if self.change.selected():
             self.change.start()
             return
