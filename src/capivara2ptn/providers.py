@@ -154,6 +154,7 @@ class CliRunner:
         result = ""
         failed = False
         text_parts: dict[str, str] = {}
+        text_message_id: str | None = None
         errors: list[str] = []
 
         def emit(text: str) -> None:
@@ -161,7 +162,7 @@ class CliRunner:
                 self.log(self.safe(text))
 
         def consume(event: dict) -> None:
-            nonlocal result, failed
+            nonlocal result, failed, text_message_id
             if self.selection.provider == "agy":
                 # Agy usa event/step_update/result, não o protocolo do Claude.
                 kind = event.get("event")
@@ -193,6 +194,15 @@ class CliRunner:
             kind = event.get("type", "")
             item = event.get("item") or {}
             part = event.get("part") or {}
+            if self.selection.provider == "opencode" and kind in ("step_start", "text"):
+                message_id = part.get("messageID")
+                if ((isinstance(message_id, str) and message_id != text_message_id)
+                        or (kind == "step_start" and not message_id)):
+                    # Comentários antes de ferramentas pertencem a outra mensagem.
+                    # Permanecem nos logs, mas não compõem a resposta final.
+                    text_parts.clear()
+                    result = ""
+                    text_message_id = message_id
             message = event.get("message") or {}
             blocks = message.get("content", []) if isinstance(message, dict) else []
             for block in blocks if isinstance(blocks, list) else []:
