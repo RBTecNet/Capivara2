@@ -94,7 +94,11 @@ def change_artifacts(root, cleaner, identifier=None):
         investigation = state.get('investigation') or {}
         summary += '\n\n## Contexto observado\n' + investigation.get('summary', '')
         summary += '\n\n## Alterações concluídas\n'
-        for task in state.get('tasks', []):
+        direct = state.get('direct')
+        if direct:
+            summary += (direct.get('result') or {}).get('summary', '') + '\n'
+            summary += '\n'.join(f"- {change['arquivo']}: {change['tipo']}" for change in direct.get('changes', []))
+        for task in ([] if direct else state.get('tasks', [])):
             summary += f"\n### {task['id']} — {task['title']}\n" + task.get('writer_report', '')[:8000]
             summary += '\n' + '\n'.join(f"- {change['arquivo']}: {change['tipo']}" for change in task.get('changes', []))
         decisions = '\n'.join(f"- {item['question']}\n  Decisão: {item['answer']}" for item in state.get('history', []))
@@ -107,7 +111,8 @@ def change_artifacts(root, cleaner, identifier=None):
         summary += '\n\n## Limitações\n' + ('\n'.join('- ' + x for x in state.get('limitations', [])) or 'Nenhuma registrada.')
         result.append({'key': directory.name + '/documentacao', 'label': directory.name, 'kind': 'document', 'content': cleaner.text(summary)})
         memory = '# Resultado ' + directory.name + '\n\n' + (state.get('plan') or {}).get('objective', state['original'])
-        memory += '\n\nComponentes afetados:\n' + '\n'.join('- ' + p for p in sorted({c['arquivo'] for t in state.get('tasks', []) for c in t.get('changes', [])}))
+        affected = direct.get('changes', []) if direct else [c for t in state.get('tasks', []) for c in t.get('changes', [])]
+        memory += '\n\nComponentes afetados:\n' + '\n'.join('- ' + p for p in sorted({c['arquivo'] for c in affected}))
         memory += '\n\nDecisões do usuário:\n' + (decisions[:6000] or 'Sem decisões adicionais.')
         memory += '\n\nVerificação: ' + str(verification.get('status', 'não identificada'))
         if state.get('limitations'):memory += '\nLimitações: ' + '; '.join(state['limitations'])[:2500]

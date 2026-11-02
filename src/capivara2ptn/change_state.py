@@ -120,7 +120,7 @@ class ChangeStore:
             self.identifier = f'change-{max(numbers, default=0) + 1:03d}'
             self.path('').mkdir(mode=0o700)
             self.state = {'version': 1, 'id': self.identifier, 'project': str(self.root), 'original': original,
-                          'created': now(), 'status': 'draft', 'phase': 'investigation', 'elapsed': 0.0,
+                          'created': now(), 'status': 'draft', 'phase': 'execution', 'elapsed': 0.0,
                           'error': '', 'read_files': {}, 'knowledge': [], 'history': [], 'question': None,
                           'interview_done': False, 'investigation': None, 'plan': None, 'approval': None,
                           'tasks': [], 'attempts': {}, 'verification': None, 'limitations': [], 'events': [], 'expected': {}}

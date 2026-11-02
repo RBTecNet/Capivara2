@@ -16,11 +16,11 @@ O servidor e seu banco original não foram modificados.
    ser validados pela opção **Informar slug do projeto…**. Essa opção apenas lê o
    pedido para verificar a existência e a permissão; não cria projetos.
 4. Inicie ou retome o módulo pelos controles habituais. O contexto remoto será
-   consultado antes da investigação e selecionado por atividade nas chamadas aos
-   modelos. Não substitui a inspeção do código nem a aprovação do plano CHANGE.
+   consultado no início da execução e selecionado por atividade nas chamadas aos
+   modelos. Não substitui a inspeção do código nem o escopo autorizado no CHANGE.
 5. Após a conclusão local, os resultados são enfileirados e publicados. O botão
    **Sincronizar** permite publicar resultados já concluídos ou repetir uma
-   publicação pendente, sem executar novamente a investigação ou as tasks.
+   publicação pendente, sem repetir a execução do módulo.
    Em CHANGE, selecione a solicitação correspondente antes de sincronizar.
 
 Abrir a TUI restaura os campos sem consultar o servidor. Servidor sem projeto não

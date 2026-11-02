@@ -10,7 +10,6 @@ import stat
 import subprocess
 from pathlib import Path
 
-from capivara2ptn.build_g1 import inventory
 from capivara2ptn.reverse_source import read_source, secret_file
 from capivara2ptn.workspace import ensure_project_destination
 
@@ -201,7 +200,20 @@ def search(root, entries, query, secrets, offset=0, pattern='*'):
 
 
 def project_snapshot(root):
-    return inventory(root)
+    result = {}
+    for parent, dirs, names in os.walk(root, followlinks=False):
+        parent = Path(parent)
+        dirs[:] = sorted(name for name in dirs if name not in IGNORED)
+        for name in [*names, *[name for name in dirs if (parent / name).is_symlink()]]:
+            if name in IGNORED:continue
+            path = parent / name
+            relative = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                result[relative] = 'link:' + sha(os.readlink(path))
+            elif path.is_file():
+                with path.open('rb') as stream:
+                    result[relative] = f'{stat.S_IMODE(path.stat().st_mode):o}:' + hashlib.file_digest(stream, 'sha256').hexdigest()
+    return result
 
 
 def git_context(root):

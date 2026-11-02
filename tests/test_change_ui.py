@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 from textual.widgets import Button, RadioButton, RadioSet, Select, TextArea
 from capivara2ptn.app import CapivaraApp
-from capivara2ptn.change_ui import ChangeControls, ChangePanel, ChangeRequestDialog, ChangePlanDialog
+from capivara2ptn.change_ui import ChangeControls, ChangePanel, ChangeRequestDialog, ChangeClarificationDialog
 from capivara2ptn.models import ModelCatalog
 from capivara2ptn.prompt_source import PromptSource
 from capivara2ptn.reverse_ui import ReversePanel
@@ -80,10 +80,9 @@ class ChangeUiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(reopened.change.store.identifier, 'change-002')
             self.assertEqual(reopened.change.store.state['status'], 'draft')
 
-    async def test_approve_plan_and_execute_through_own_controller(self):
-        runner = FakeChangeRunner()
-        with patch('capivara2ptn.change_ui.CliRunner', return_value=runner), \
-             patch('capivara2ptn.change_flow.verify_change', new=AsyncMock(return_value=RESULT)), \
+    async def test_executes_directly_without_plan_auditor_or_approval(self):
+        runner = FakeChangeRunner(self.cwd)
+        with patch('capivara2ptn.change_ui.CliRunner', return_value=runner) as adapter, \
              patch.object(CapivaraApp, 'execute_build') as build, patch.object(CapivaraApp, 'execute_init') as init:
             app = CapivaraApp()
             async with app.run_test(size=(120, 45)) as pilot:
@@ -94,14 +93,9 @@ class ChangeUiTests(unittest.IsolatedAsyncioTestCase):
                 app.query_one('#model', Select).value = 'fixture'
                 await pilot.pause()
                 app.start_pressed()
-                for _ in range(70):
-                    if isinstance(app.screen, ChangePlanDialog):break
-                    await pilot.pause(.02)
-                self.assertIsInstance(app.screen, ChangePlanDialog)
-                self.assertEqual((self.cwd / 'app.py').read_text(), SOURCE)
-                app.screen.approve()
-                for _ in range(70):
+                for _ in range(100):
                     if not app.change.running:break
+                    self.assertNotIsInstance(app.screen, ChangeClarificationDialog)
                     await pilot.pause(.02)
                 self.assertFalse(app.change.running)
                 self.assertEqual(app.change.store.state['status'], 'done')
@@ -109,17 +103,22 @@ class ChangeUiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertGreater(app.change.store.elapsed(), 0)
                 self.assertEqual(app._clock.totals, {})
                 self.assertIn('phone.replace', (self.cwd / 'app.py').read_text())
+                self.assertEqual(len(runner.calls), 1)
+                self.assertEqual(runner.calls[0][2]['access'], 'write')
+                adapter.assert_called_once()
+                self.assertEqual(adapter.call_args.args[1], self.cwd)
+                self.assertEqual(app.change.store.state['tasks'], [])
+                self.assertFalse(app.change.store.path('plano.md').exists())
                 build.assert_not_called();init.assert_not_called()
 
-    async def test_stop_preserves_approved_plan_and_writer_operation(self):
+    async def test_stop_preserves_partial_work_without_approved_plan(self):
         waiting = asyncio.Event()
         class WaitingRunner(FakeChangeRunner):
-            async def invoke(self, instructions, data, **kwargs):
-                if data.get('operation') == 'writer':
-                    waiting.set()
-                    await asyncio.Event().wait()
-                return await super().invoke(instructions, data, **kwargs)
-        with patch('capivara2ptn.change_ui.CliRunner', return_value=WaitingRunner()):
+            async def invoke(inner, instructions, data, **kwargs):
+                await super(WaitingRunner, inner).invoke(instructions, data, **kwargs)
+                waiting.set()
+                await asyncio.Event().wait()
+        with patch('capivara2ptn.change_ui.CliRunner', return_value=WaitingRunner(self.cwd)):
             app = CapivaraApp()
             async with app.run_test(size=(120, 45)) as pilot:
                 await pilot.pause()
@@ -129,17 +128,13 @@ class ChangeUiTests(unittest.IsolatedAsyncioTestCase):
                 app.query_one('#model', Select).value = 'fixture'
                 await pilot.pause()
                 app.start_pressed()
-                for _ in range(70):
-                    if isinstance(app.screen, ChangePlanDialog):break
-                    await pilot.pause(.02)
-                app.screen.approve()
                 await asyncio.wait_for(waiting.wait(), 8)
                 app.query_one('#change-stop', Button).press()
                 for _ in range(70):
                     if not app.change.running:break
                     await pilot.pause(.02)
                 self.assertEqual(app.change.store.state['status'], 'interrupted')
-                self.assertTrue(app.change.store.state['approval'])
-                self.assertEqual(app.change.store.state['tasks'][0]['operation'], 'writer')
-                self.assertEqual((self.cwd / 'app.py').read_text(), SOURCE)
+                self.assertIsNone(app.change.store.state['approval'])
+                self.assertTrue(app.change.store.state['direct']['changes'])
+                self.assertIn('phone.replace', (self.cwd / 'app.py').read_text())
                 self.assertFalse(app.query_one('#configuration').disabled)
