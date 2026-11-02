@@ -45,6 +45,21 @@ def sanitize(value):
     return value
 
 
+def protect_data(value, safe, paths, hashes, field=''):
+    """Conteúdo é sanitizado; identidades verificadas do inventário são estáveis."""
+    if isinstance(value, str):
+        if field in {'path', 'files', 'related_files', 'allowed_paths'} and value in paths:
+            return value
+        if field == 'sha256' and value in hashes:
+            return value
+        return redact(safe(value))
+    if isinstance(value, list):
+        return [protect_data(item, safe, paths, hashes, field) for item in value]
+    if isinstance(value, dict):
+        return {key: protect_data(item, safe, paths, hashes, key) for key, item in value.items()}
+    return value
+
+
 def strings(value, label: str) -> list[str]:
     if not isinstance(value, list) or any(not isinstance(x, str) or not x.strip() for x in value):
         raise ReverseError(f'Resposta inválida: {label} deve ser uma lista de textos.')
@@ -68,8 +83,11 @@ def domains_valid(value: object, paths: set[str]) -> list[dict]:
         name = nonempty(item.get('name'), 'nome do domínio').strip()
         purpose = nonempty(item.get('purpose'), 'finalidade do domínio')
         files = strings(item.get('files'), 'arquivos do domínio')
-        if not files or not set(files) <= paths:
-            raise ReverseError(f'Domínio {name}: arquivos ausentes do inventário/lote.')
+        if not files:
+            raise ReverseError(f'Domínio {name}: a lista files está vazia. Associe arquivos concretos do lote; não crie um domínio sem arquivos.')
+        unknown = set(files) - paths
+        if unknown:
+            raise ReverseError(f'Domínio {name}: caminhos fora do inventário/lote: ' + ', '.join(sorted(unknown)) + '. Use os caminhos exatos de allowed_paths.')
         key = name.casefold()
         if key in names:
             raise ReverseError('Domínios com nomes duplicados. Ajuste a classificação.')
@@ -302,6 +320,49 @@ def discovery_batches(entries: list[dict]) -> list[list[dict]]:
     return batches
 
 
+async def discover_batch(store, batch, samples, runner, protect, update):
+    key = digest(batch)
+    artifact = f'evidencias/descoberta/{key}.json'
+    pending = store.read_json(artifact)
+    attempt = (pending or {}).get('attempt', 0)
+    previous = (pending or {}).get('response')
+    reason = (pending or {}).get('reason', '')
+    paths = {item['path'] for item in batch}
+    while True:
+        attempt += 1
+        data = {'inventory_batch': batch, 'samples': samples, 'allowed_paths': sorted(paths),
+                'known_domains': [{'name': d['name'], 'purpose': d['purpose']} for d in store.state['domains']]}
+        if previous is not None:
+            data['reexamination'] = {'attempt': attempt, 'reason': reason, 'previous_report': previous}
+        instructions = load_reverse_prompt('reverse-discovery.md', store) + '\n\n' + load_reverse_prompt('reverse-discovery-protocol.md', store)
+        raw = await runner.invoke(instructions, protect(data))
+        value = None
+        try:
+            value = protect(response(raw))
+            nonempty(value.get('overview'), 'visão geral')
+            discovered = domains_valid(value.get('domains'), paths)
+        except ReverseError as error:
+            reason = protect(str(error))
+            previous = value if value is not None else protect(raw)
+            pending = {'attempt': attempt, 'reason': reason, 'response': previous, 'status': 'pending'}
+            store.write_json(artifact, pending)
+            store.state['pending_discovery'] = {'key': key, 'artifact': artifact, 'attempt': attempt, 'reason': reason}
+            store.save()
+            blocker = value.get('external_blocker') if isinstance(value, dict) else None
+            if isinstance(blocker, str) and blocker.strip():
+                raise ReverseError(reason + ' Ação externa necessária: ' + blocker) from error
+            update(store.state, f'Reexaminando classificação do lote · tentativa {attempt + 1}. {reason}')
+            await asyncio.sleep(0)
+            continue
+        result = sanitize({'overview': value['overview'], 'domains': discovered})
+        store.state['discovery'][key] = result
+        if pending:store.write_json(artifact, {**pending, 'status': 'resolved', 'resolved_attempt': attempt})
+        if store.state.get('pending_discovery', {}).get('key') == key:
+            store.state.pop('pending_discovery')
+        store.save()
+        return result
+
+
 def unit_key(domain: dict, entry: dict, index: int) -> str:
     return digest([domain['id'], entry['path'], entry['sha256'], index])
 
@@ -453,14 +514,11 @@ async def run_reverse(store: ReverseStore, source: Path, runner, approve, confir
     inv = await inventory_async(source)
     for active_runner in {runner, auditor} - {None}:
         active_runner.secrets.extend(known_secrets(source, inv))
+    identity_paths = {entry['path'] for entry in inv['entries']}
+    identity_hashes = {entry['sha256'] for entry in inv['entries'] if 'sha256' in entry}
+    identity_hashes.add(inv['sha256'])
     def protect(value):
-        if isinstance(value, str):
-            return redact(runner.safe(value))
-        if isinstance(value, list):
-            return [protect(x) for x in value]
-        if isinstance(value, dict):
-            return {k: protect(x) for k, x in value.items()}
-        return value
+        return protect_data(value, runner.safe, identity_paths, identity_hashes)
     files = {e['path']: e['sha256'] for e in relevant(inv)}
     signatures = {e['path']: e['sha256'] for e in inv['entries'] if 'sha256' in e}
     if not files:
@@ -506,22 +564,15 @@ async def run_reverse(store: ReverseStore, source: Path, runner, approve, confir
         if key in state['discovery']:
             current_discovery[key] = state['discovery'][key]
             continue
-        paths = {e['path'] for e in batch}
         entries = {e['path']: e for e in relevant(inv)}
         samples = []
         for item in batch:
             # Apenas uma amostra na descoberta; investigação posterior lê TODOS os trechos.
             chunk = source_chunks(source, entries[item['path']])[0]
             samples.append({'path': item['path'], 'sample': chunk['text'][:700]})
-        value = protect(response(await runner.invoke(load_reverse_prompt('reverse-discovery.md', store), protect(
-            {'inventory_batch': batch, 'samples': samples,
-             'known_domains': [{'name': d['name'], 'purpose': d['purpose']} for d in state['domains']]}))))
-        nonempty(value.get('overview'), 'visão geral')
-        discovered = domains_valid(value.get('domains'), paths)
-        current_discovery[key] = sanitize({'overview': value['overview'], 'domains': discovered})
-        state['discovery'][key] = current_discovery[key]
-        store.save()
+        current_discovery[key] = await discover_batch(store, batch, samples, runner, protect, update)
     state['discovery'] = current_discovery
+    state.pop('pending_discovery', None)
     suggestions = merge_domains([state['domains'], *[x['domains'] for x in current_discovery.values()]], set(files))
     if not state['approved']:
         stage('approval', 'Confirme ou ajuste os domínios antes da investigação aprofundada.')

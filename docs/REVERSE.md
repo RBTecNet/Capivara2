@@ -40,10 +40,12 @@ Esses prompts são lidos novamente em cada chamada e preservados ao preparar uma
   estado.json
   inventario.json
   prompts/reverse-discovery.md
+  prompts/reverse-discovery-protocol.md
   prompts/reverse-investigation.md
   prompts/reverse-investigation-protocol.md
   dominios/<id>.md
   evidencias/<unidade>.json
+  evidencias/descoberta/<lote>.json  # classificação recusada e realimentação
   evidencias/pendentes/<unidade>.json  # diagnóstico e reexame, quando necessário
   evidencias/verificacao-<n>.txt  # quando solicitada
   documentacao/visao-geral.md
@@ -67,11 +69,19 @@ Não há uma síntese final pelo modelo que possa eliminar requisitos de domíni
   caches e compilados têm exclusões justificadas por árvore. Recursos binários são
   inventariados e registrados como limitação da análise estática.
 - Markdown, comentários e outros conteúdos do legado são dados não confiáveis.
-- Há sanitização de credenciais reconhecíveis e de valores lidos de arquivos `.env`.
+- Há sanitização de credenciais reconhecíveis e dos valores sensíveis de arquivos `.env`.
+  Valores públicos de configuração, como ambiente, nível de log e porta, não são
+  tratados automaticamente como senhas. Caminhos e hashes verificados do inventário
+  mantêm sua identidade nas referências, sem substituir fragmentos por `[OCULTO]`.
   Valores opacos sem identificação semântica podem exigir classificação humana;
   revise os documentos antes de compartilhá-los fora do projeto.
 - O inventário precisa terminar antes da descoberta. A descoberta usa lotes de metadados
   e amostras; a investigação aprovada lê **todos** os trechos textuais relevantes.
+- Na descoberta, `allowed_paths` informa os caminhos exatos do lote. Arquivos fora
+  desse conjunto e domínios sem arquivos continuam inválidos. O mesmo investigador
+  recebe a resposta recusada e o motivo para corrigir a classificação, sem limite
+  fixo de tentativas. Diagnóstico e progresso ficam salvos em `evidencias/descoberta/`;
+  a retomada conserva os lotes já válidos e o reexame pendente.
 - Respostas precisam justificar cobertura e evidências com arquivo e intervalo de linhas.
   Rotinas não compreendidas exigem limitação explícita. Inferências ficam separadas dos fatos.
 - O intervalo investigado define a cobertura da unidade; continuidade de rotinas e

@@ -257,13 +257,15 @@ async def inventory_async(root: Path) -> dict:
 
 def known_secrets(root: Path, inv: dict) -> list[str]:
     values = set()
+    public_database_keys = {'DB_CONNECTION', 'DB_HOST', 'DB_PORT', 'DB_DATABASE'}
     for entry in inv['entries']:
         if entry['kind'] == 'file' and secret_file(Path(entry['path'])):
             raw = read_source(root, entry['path']).decode('utf-8', errors='replace')
             for line in raw.splitlines():
-                match = re.match(r'\s*(?:export\s+)?[\w.-]+\s*=\s*(.+?)\s*$', line)
-                if match:
-                    value = match[1].strip().strip('\"\'')
+                match = re.match(r'\s*(?:export\s+)?([\w.-]+)\s*=\s*(.+?)\s*$', line)
+                if (match and match[1].upper() not in public_database_keys
+                        and re.fullmatch(SECRET_KEY + r'|[\w.-]*(?:senha|segredo|credencial|username|connection[_-]?string)[\w.-]*|PASS|PWD', match[1], re.I)):
+                    value = match[2].strip().strip('\"\'')
                     if len(value) >= 4 and not value.startswith('#'):
                         values.add(value)
     return sorted(values, key=len, reverse=True)

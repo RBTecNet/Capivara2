@@ -10,9 +10,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from capivara2ptn.providers import CliRunner, Selection
-from capivara2ptn.reverse_source import ReverseError, inventory, relevant, redact, source_chunks, validate_roots
+from capivara2ptn.reverse_source import ReverseError, inventory, relevant, redact, source_chunks, validate_roots, known_secrets
 from capivara2ptn.reverse_state import ReverseStore
-from capivara2ptn.reverse_flow import run_reverse, validate_report, domains_valid
+from capivara2ptn.reverse_flow import run_reverse, validate_report, domains_valid, protect_data, discovery_batches
 from capivara2ptn.reverse_verify import verify
 
 
@@ -594,6 +594,103 @@ class ReverseTests(unittest.IsolatedAsyncioTestCase):
         corrected = next(c for c in runner.calls if 'reexamination' in c)
         self.assertIn('JSON inválido', corrected['reexamination']['reason'])
         self.assertEqual(corrected['reexamination']['previous_report'], 'invalid json')
+
+
+    def test_public_env_values_are_not_collected_as_credentials(self):
+        (self.source / '.env').write_text('APP_ENV=local\nLOG_LEVEL=error\nREVERB_SCHEME=http\nDB_PORT=3306\nDB_DATABASE=cronus\nAPP_KEY=credential-canary\nDB_PASSWORD=password-canary\nSENHA=senha-canary\n')
+        values = known_secrets(self.source, inventory(self.source))
+        self.assertEqual(set(values), {'credential-canary', 'password-canary', 'senha-canary'})
+
+    def test_redaction_preserves_inventory_paths_and_hashes_but_not_content(self):
+        runner = FakeRunner();runner.secrets = ['live', '3306']
+        path, checksum = 'app/livewire3306.py', 'a' * 60 + '3306'
+        packet = {'inventory_batch': [{'path': path, 'sha256': checksum, 'sample': 'private = "live"'}],
+                  'allowed_paths': [path], 'domains': [{'files': [path]}], 'related_files': [path],
+                  'untrusted': {'path': 'invented-live.py', 'sha256': 'b' * 60 + '3306'}}
+        result = protect_data(packet, runner.safe, {path}, {checksum})
+        self.assertEqual(result['inventory_batch'][0]['path'], path)
+        self.assertEqual(result['inventory_batch'][0]['sha256'], checksum)
+        self.assertEqual(result['allowed_paths'], [path])
+        self.assertEqual(result['domains'][0]['files'], [path])
+        self.assertEqual(result['related_files'], [path])
+        self.assertNotIn('live', result['inventory_batch'][0]['sample'])
+        self.assertNotIn('live', result['untrusted']['path'])
+        self.assertNotIn('3306', result['untrusted']['sha256'])
+
+    async def test_secret_substrings_do_not_break_file_references_during_investigation(self):
+        (self.source / '.env').write_text('APP_ENV=local\nLOG_LEVEL=error\nDB_PASSWORD=live\n')
+        (self.source / 'local-livewire-error.py').write_text('def calcular(v):\n    return v * .9\n')
+        before = self.fingerprint()
+        _, store, runner = await self.run_flow()
+        self.assertEqual(store.state['status'], 'done')
+        self.assertTrue(any(record['path'] == 'local-livewire-error.py' for record in store.state['units'].values()))
+        persisted = store.read_json('inventario.json')
+        self.assertEqual(persisted, inventory(self.source))
+        self.assertEqual(before, self.fingerprint())
+
+    async def test_invalid_discovery_path_gets_precise_feedback_without_skipping_batch(self):
+        class InvalidOnce(FakeRunner):
+            async def invoke(inner, instructions, data, **kwargs):
+                raw = await super().invoke(instructions, data, **kwargs)
+                if 'inventory_batch' in data and 'reexamination' not in data:
+                    value = json.loads(raw);value['domains'][0]['files'] = ['inventado.py']
+                    return json.dumps(value)
+                return raw
+        _, store, runner = await self.run_flow(InvalidOnce())
+        retry = next(c for c in runner.calls if 'inventory_batch' in c and 'reexamination' in c)
+        self.assertIn('inventado.py', retry['reexamination']['reason'])
+        self.assertEqual(set(retry['allowed_paths']), {'estoque.py', 'precos.py'})
+        self.assertNotIn('inventado.py', store.target('prompt-final.md').read_text())
+        self.assertNotIn('pending_discovery', store.state)
+        self.assertEqual(next(store.target('evidencias/descoberta').glob('*.json')).exists(), True)
+
+    async def test_empty_discovery_domain_is_reexamined_instead_of_accepted(self):
+        class EmptyOnce(FakeRunner):
+            async def invoke(inner, instructions, data, **kwargs):
+                raw = await super().invoke(instructions, data, **kwargs)
+                if 'inventory_batch' in data and 'reexamination' not in data:
+                    value = json.loads(raw);value['domains'][0]['files'] = []
+                    return json.dumps(value)
+                return raw
+        _, store, runner = await self.run_flow(EmptyOnce())
+        retry = next(c for c in runner.calls if 'inventory_batch' in c and 'reexamination' in c)
+        self.assertIn('lista files está vazia', retry['reexamination']['reason'])
+        self.assertEqual(store.state['status'], 'done')
+
+    async def test_discovery_resume_keeps_valid_batches_and_pending_feedback(self):
+        class PendingSecond(FakeRunner):
+            async def invoke(inner, instructions, data, **kwargs):
+                if 'inventory_batch' in data and 'reexamination' in data:raise asyncio.CancelledError
+                raw = await super().invoke(instructions, data, **kwargs)
+                if 'inventory_batch' in data and data['inventory_batch'][0]['path'] == 'precos.py':return 'invalid json'
+                return raw
+        store = ReverseStore(self.dest)
+        def one_file_batches(entries):return [[entry] for batch in discovery_batches(entries) for entry in batch]
+        with patch('capivara2ptn.reverse_flow.discovery_batches', side_effect=one_file_batches):
+            with self.assertRaises(asyncio.CancelledError):await self.run_flow(PendingSecond(), store)
+            store.fail('Interrompido', interrupted=True)
+            self.assertEqual(len(store.state['discovery']), 1)
+            self.assertIn('JSON inválido', store.state['pending_discovery']['reason'])
+            reopened = ReverseStore(self.dest);reopened.load()
+            _, reopened, runner = await self.run_flow(store=reopened)
+        calls = [c for c in runner.calls if 'inventory_batch' in c]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['inventory_batch'][0]['path'], 'precos.py')
+        self.assertEqual(calls[0]['reexamination']['attempt'], 2)
+        self.assertEqual(calls[0]['reexamination']['previous_report'], 'invalid json')
+        self.assertEqual(reopened.state['status'], 'done')
+        self.assertNotIn('pending_discovery', reopened.state)
+
+    def test_discovery_protocol_is_added_without_overwriting_custom_prompt(self):
+        from capivara2ptn.reverse_prompts import load_reverse_prompt
+        store = ReverseStore(self.dest);store.begin(self.source)
+        load_reverse_prompt('reverse-discovery.md', store)
+        store.write('prompts/reverse-discovery.md', 'Descoberta personalizada.')
+        protocol = load_reverse_prompt('reverse-discovery-protocol.md', store)
+        self.assertIn('allowed_paths', protocol)
+        self.assertIn('reexamination', protocol)
+        self.assertEqual(load_reverse_prompt('reverse-discovery.md', store), 'Descoberta personalizada.')
+        self.assertTrue(store.target('prompts/.discovery-protocol-installed').exists())
 
 
 if __name__ == '__main__':
