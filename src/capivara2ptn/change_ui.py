@@ -23,6 +23,7 @@ from capivara2ptn.plan_panel import PlanPanel
 from capivara2ptn.project_config import read_auditor, read_options
 from capivara2ptn.prompt_source import PromptSource
 from capivara2ptn.providers import CliRunner, Selection
+from capivara2ptn.doc_center_ui import DocCenterFields
 
 
 class ChangeInterviewDialog(InterviewDialog):
@@ -167,6 +168,7 @@ class ChangeControls(Vertical):
         with Horizontal(id='change-controls-actions'):
             yield Button('Nova solicitação', id='change-new')
             yield Button('Histórico', id='change-history', disabled=True)
+        yield DocCenterFields('change')
 
     @on(Button.Pressed, '#change-new')
     def create(self):self.app.change.create_dialog()
@@ -417,6 +419,11 @@ class ChangeController:
                 writer = CliRunner(selection, model_cwd, log, [*tokens, *secrets.values], forbid_automated_tests=options.forbid_automated_tests)
                 auditor = (writer if auditor_selection == selection else CliRunner(auditor_selection, model_cwd, log, [*tokens, *secrets.values],
                            forbid_automated_tests=options.forbid_automated_tests)) if auditor_selection else None
+                doc_center = await app.query_one('#change-doc-center', DocCenterFields).prepare(self.store.state['original'])
+                if doc_center is not None:
+                    original_writer = writer
+                    writer = doc_center.wrap(writer)
+                    auditor = writer if auditor is original_writer else doc_center.wrap(auditor) if auditor else None
                 async def ask(question):
                     return await app.push_screen_wait(ChangeInterviewDialog(question['text'], tuple(question['choices']), preview=False))
                 async def approve(plan, recovery):
@@ -434,6 +441,8 @@ class ChangeController:
                     self.store.log(message)
                     if app.query('#log'):app.write_log('sistema', message)
                 await ChangeRun(self.store, writer, auditor, options, secrets, update, ask, approve, scope, conflict).run()
+                if doc_center is not None and self.store.state['status'] in {'done', 'done_with_limits'}:
+                    await doc_center.finish(self.store.identifier)
         except asyncio.CancelledError:
             raise
         except Exception as error:

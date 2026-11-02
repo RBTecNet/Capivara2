@@ -21,6 +21,7 @@ from capivara2ptn.providers import CliRunner, Selection
 from capivara2ptn.reverse_flow import domains_valid, run_reverse
 from capivara2ptn.reverse_source import ReverseError, digest, redact, validate_roots
 from capivara2ptn.reverse_state import ReverseStore
+from capivara2ptn.doc_center_ui import DocCenterFields
 
 
 class ReverseConfirmDialog(ModalScreen[bool]):
@@ -187,6 +188,7 @@ class ReverseControls(Vertical):
         yield Static('Diretório legado', classes='field-label')
         yield Input(placeholder='Caminho do projeto somente para leitura', id='reverse-source')
         yield Button('Selecionar projeto legado', id='reverse-choose')
+        yield DocCenterFields('reverse')
         yield Static('Verificação opcional: comando autorizado em cópia sanitizada, sem rede, com Bubblewrap. Deixe vazio para análise estática.', classes='muted')
         yield Input(placeholder='Ex.: python3 --version', id='reverse-command')
         yield Button('Preparar reexecução', id='reverse-restart')
@@ -419,6 +421,11 @@ class ReverseController:
             if self.restart:
                 self.store.archive()
                 self.restart = False
+            doc_center = await app.query_one('#reverse-doc-center', DocCenterFields).prepare('Investigação REVERSE da aplicação legada', source)
+            if doc_center is not None:
+                original_runner = runner
+                runner = doc_center.wrap(runner)
+                auditor = runner if auditor is original_runner else doc_center.wrap(auditor)
             async def approve(domains):
                 return await app.push_screen_wait(ReverseDomainsDialog(domains))
             async def changes(paths, names):
@@ -434,6 +441,8 @@ class ReverseController:
             self.store.pause_clock()
             if path:
                 app.write_log('sucesso', f'Prompt REVERSE concluído: {path}')
+                if doc_center is not None:
+                    await doc_center.finish()
                 if await app.push_screen_wait(ReverseConfirmDialog('REVERSE → INIT',
                     'Selecionar INIT com origem Arquivo e o prompt consolidado? A entrevista só começará quando você pressionar Iniciar. Provedor, modelo e effort serão preservados.', 'Continuar para INIT')):
                     self.continue_init()
